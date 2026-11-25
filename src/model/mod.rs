@@ -4,9 +4,11 @@
 //! only wrap others.
 
 mod from_index;
+mod from_java;
 mod tree;
 
 pub use from_index::build;
+pub use from_java::build as build_java;
 pub use tree::{NodeId, NodeKind, Tree};
 
 use std::collections::HashMap;

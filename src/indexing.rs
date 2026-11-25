@@ -28,24 +28,36 @@ pub fn index(workspace: &Workspace, configuration: &Configuration) -> Result<Vec
     configuration.check(&workspace.root)?;
     let cfgs = configuration.cfgs(&workspace.root);
     let directory = cache_dir(workspace, configuration, &cfgs);
-    let index = directory.join("index.scip");
-    let stamp_path = directory.join("index.stamp");
     // rust-analyzer's settings: the target and features, none by default.
     let ra_config = configuration.settings().to_string();
     let stamp = stamp(workspace, &ra_config, &cfgs)?;
-    let last_stamp = std::fs::read_to_string(&stamp_path).ok();
-    if last_stamp.as_deref() != Some(stamp.as_str()) || !index.exists() {
+    cached(&directory, &stamp, |index| {
         if configuration.is_default() {
             eprintln!("{TOOL}: indexing workspace...");
         } else {
             eprintln!("{TOOL}: indexing workspace with {configuration}...");
         }
-        std::fs::create_dir_all(&directory).map_err(|e| io_error(&directory, e))?;
-        remove_if_present(&stamp_path)?;
         let config = directory.join("ra-config.json");
         std::fs::write(&config, &ra_config).map_err(|e| io_error(&config, e))?;
-        run_rust_analyzer(&workspace.root, &config, &index)?;
-        std::fs::write(&stamp_path, &stamp).map_err(|e| io_error(&stamp_path, e))?;
+        run_rust_analyzer(&workspace.root, &config, index)
+    })
+}
+
+/// The index kept in `directory`, which `build` writes again, to the path it
+/// is given, unless it was last built from `stamp`.
+pub fn cached(
+    directory: &Path,
+    stamp: &str,
+    build: impl FnOnce(&Path) -> Result<(), Error>,
+) -> Result<Vec<u8>, Error> {
+    let index = directory.join("index.scip");
+    let stamp_path = directory.join("index.stamp");
+    let last_stamp = std::fs::read_to_string(&stamp_path).ok();
+    if last_stamp.as_deref() != Some(stamp) || !index.exists() {
+        std::fs::create_dir_all(directory).map_err(|e| io_error(directory, e))?;
+        remove_if_present(&stamp_path)?;
+        build(&index)?;
+        std::fs::write(&stamp_path, stamp).map_err(|e| io_error(&stamp_path, e))?;
     }
     std::fs::read(&index).map_err(|e| io_error(&index, e))
 }
@@ -76,19 +88,27 @@ fn stamp(workspace: &Workspace, ra_config: &str, cfgs: &str) -> Result<String, E
     stamp += ra_config;
     stamp.push('\n');
     stamp += cfgs;
-    for file in workspace.source_files()? {
-        let hash = match std::fs::read(workspace.root.join(&file)) {
+    stamp += &hashes(&workspace.root, &workspace.source_files()?)?;
+    Ok(stamp)
+}
+
+/// A line for each of `files`, relative to `root`: a hash of its text, or
+/// `missing`, and its path.
+pub fn hashes(root: &Path, files: &[String]) -> Result<String, Error> {
+    let mut lines = String::new();
+    for file in files {
+        let hash = match std::fs::read(root.join(file)) {
             Ok(bytes) => {
                 let mut hasher = DefaultHasher::new();
                 hasher.write(&bytes);
                 format!("{:016x}", hasher.finish())
             }
             Err(e) if e.kind() == ErrorKind::NotFound => "missing".to_owned(),
-            Err(e) => return Err(io_error(&workspace.root.join(&file), e)),
+            Err(e) => return Err(io_error(&root.join(file), e)),
         };
-        stamp += &format!("{hash} {file}\n");
+        lines += &format!("{hash} {file}\n");
     }
-    Ok(stamp)
+    Ok(lines)
 }
 
 fn run_rust_analyzer(root: &Path, config: &Path, index: &Path) -> Result<(), Error> {
@@ -131,7 +151,7 @@ fn remove_if_present(path: &Path) -> Result<(), Error> {
     }
 }
 
-fn io_error(path: &Path, error: std::io::Error) -> Error {
+pub fn io_error(path: &Path, error: std::io::Error) -> Error {
     Error::new(format!("{}: {error}", path.display()))
 }
 

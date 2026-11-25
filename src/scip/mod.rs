@@ -31,6 +31,9 @@ pub struct SymbolInformation<'a> {
     pub kind: u64,
     /// The declaration as written, body left out: `pub(crate) fn serve(&self)`, `pub mod log`.
     pub signature: &'a str,
+    /// It implements or overrides another symbol: a Java method marked
+    /// `@Override` or written for an interface.
+    pub implements: bool,
 }
 
 pub struct Occurrence<'a> {
@@ -67,8 +70,10 @@ const DOCUMENT_OCCURRENCES: u32 = 2;
 const DOCUMENT_SYMBOLS: u32 = 3;
 const DOCUMENT_TEXT: u32 = 5;
 const SYMBOL_INFORMATION_SYMBOL: u32 = 1;
+const SYMBOL_INFORMATION_RELATIONSHIPS: u32 = 4;
 const SYMBOL_INFORMATION_KIND: u32 = 5;
 const SYMBOL_INFORMATION_SIGNATURE: u32 = 7;
+const RELATIONSHIP_IS_IMPLEMENTATION: u32 = 3;
 const OCCURRENCE_RANGE: u32 = 1;
 const OCCURRENCE_SYMBOL: u32 = 2;
 const OCCURRENCE_SYMBOL_ROLES: u32 = 3;
@@ -123,11 +128,19 @@ fn symbol_information(bytes: &[u8]) -> Result<SymbolInformation<'_>, Malformed> 
         symbol: "",
         kind: 0,
         signature: "",
+        implements: false,
     };
     for field in Fields::new(bytes) {
         match field? {
             (SYMBOL_INFORMATION_SYMBOL, value) => information.symbol = protobuf::string(value)?,
             (SYMBOL_INFORMATION_KIND, Value::Varint(kind)) => information.kind = kind,
+            (SYMBOL_INFORMATION_RELATIONSHIPS, value) => {
+                for field in Fields::new(protobuf::bytes(value)?) {
+                    if let (RELATIONSHIP_IS_IMPLEMENTATION, Value::Varint(1)) = field? {
+                        information.implements = true;
+                    }
+                }
+            }
             (SYMBOL_INFORMATION_SIGNATURE, value) => {
                 for field in Fields::new(protobuf::bytes(value)?) {
                     if let (DOCUMENT_TEXT, text) = field? {

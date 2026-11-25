@@ -95,6 +95,19 @@ impl<'a> Symbol<'a> {
             .copied()
     }
 
+    /// Its package's name and version, unless the index escapes a space in one.
+    pub fn package_version(&self) -> Option<(&'a str, &'a str)> {
+        match (&self.package, &self.version) {
+            (Cow::Borrowed(package), Cow::Borrowed(version)) => Some((package, version)),
+            _ => None,
+        }
+    }
+
+    /// The symbol as the index writes it.
+    pub fn text(&self) -> &'a str {
+        self.text
+    }
+
     /// The module this symbol names, as the path below its crate's root, if it names one.
     pub fn module(&self) -> Option<Vec<&str>> {
         let is_module = self.descriptors.iter().all(|d| d.kind == Kind::Namespace);

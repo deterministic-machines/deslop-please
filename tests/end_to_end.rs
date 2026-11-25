@@ -1,4 +1,5 @@
-//! End-to-end tests of `deslop-please` on small workspaces through `rust-analyzer scip`.
+//! End-to-end tests of `deslop-please` on small workspaces through `rust-analyzer scip`,
+//! and on small Java projects through `scip-java index`.
 //! A fixture family is a base workspace in `tests/fixtures/<family>` and its
 //! variants in `tests/variants/<family>/<variant>`, each holding only the files
 //! it changes: restructurings that must report the same keys, and a fix.
@@ -680,4 +681,106 @@ fn outside_a_cargo_workspace_reports_error() {
     std::fs::remove_dir_all(&empty).unwrap();
     assert_eq!(run.code, Some(2));
     assert!(run.stderr.contains("not inside a Cargo workspace"));
+}
+
+/// Whether a Java test can run: it needs `tool` on PATH, `scip-java` or the
+/// build tool, and a JDK. CI has them; elsewhere a test is skipped without.
+fn has(tool: &str) -> bool {
+    let found = Command::new(tool)
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success());
+    assert!(
+        found || std::env::var_os("CI").is_none(),
+        "CI runs the Java tests, which need {tool} on PATH"
+    );
+    if !found {
+        eprintln!("skipped: {tool} is not on PATH");
+    }
+    found
+}
+
+#[test]
+fn a_java_field_leaks_through_public_fields_but_not_through_a_getter_that_copies() {
+    if !has("scip-java") || !has("mvn") {
+        return;
+    }
+    let project = workspace("java_field_leak", None, "java_field_leak");
+    let run_queue = run(&project, &[]);
+    assert_eq!(run_queue.code, Some(1));
+    assert!(run_queue.stdout.contains(
+        "error[field-leak]: `RunQueue::items` is known outside `RunQueue`: 5 places in 1 module"
+    ));
+    // `Report` reads `head` through `getHead()`, and `Policy` writes it.
+    assert!(run_queue.stdout.contains(
+        "error[field-leak]: `RunQueue::head` is known outside `RunQueue`: 1 place in 1 module\n\
+         \x20 --> src/main/java/com/example/runqueue/sched/Policy.java:17:1\n"
+    ));
+    assert!(run_queue.stdout.contains(
+        "    runqueue::queue::RunQueue\n\
+         \x20     items ◀━━━ 5  runqueue::sched\n\
+         \x20     also known outside: head\n\
+         \x20     kept: limit\n"
+    ));
+    // The test sources call into `app`, which is no use.
+    assert_eq!(
+        keys(&project),
+        [
+            "field-leak runqueue::queue::RunQueue::head",
+            "field-leak runqueue::queue::RunQueue::items",
+        ]
+    );
+}
+
+#[test]
+fn a_java_package_cycle_is_a_module_cycle_of_its_artifact_until_the_constant_moves() {
+    if !has("scip-java") || !has("mvn") {
+        return;
+    }
+    let net = run(
+        &workspace("java_module_cycle", None, "java_module_cycle"),
+        &[],
+    );
+    assert_eq!(net.code, Some(1));
+    assert!(
+        net.stdout
+            .contains("error[module-cycle]: 2 modules in `net` use each other in a circle")
+    );
+    assert!(net.stdout.contains(
+        "    ┌─▶ kinds\n\
+         \x20   │     ┃ kinds/Stream.java:14  Stream::open uses Socket::{self, BACKLOG_MOST}\n\
+         \x20   │     ▼\n\
+         \x20   │   socket\n\
+         \x20   │     │ socket/Socket.java:8  Socket::listen uses Stream::{self, open}\n\
+         \x20   └─────┘\n"
+    ));
+    assert_eq!(
+        variant_keys("java_module_cycle", None),
+        ["module-cycle net::kinds,net::socket"]
+    );
+    assert_eq!(
+        variant_keys("java_module_cycle", Some("moved")),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn a_gradle_project_is_a_package_for_each_of_its_projects() {
+    if !has("scip-java") || !has("gradle") {
+        return;
+    }
+    assert_eq!(
+        variant_keys("java_gradle", None),
+        ["module-cycle core::kinds,core::socket"]
+    );
+}
+
+#[test]
+fn a_java_project_takes_no_cargo_configuration() {
+    let project = workspace("java_field_leak", None, "java_configuration");
+    let run = run(&project, &["--features", "a"]);
+    assert_eq!(run.code, Some(2));
+    assert!(run.stderr.contains(
+        "`--features a` chooses what cargo builds: a Java project has no such configuration"
+    ));
 }

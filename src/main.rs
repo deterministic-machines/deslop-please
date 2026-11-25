@@ -1,11 +1,12 @@
-//! Architectural linter for Rust workspaces: enforces deep modules and narrow
-//! interfaces, working like `cargo check` / `cargo clippy`.
+//! Architectural linter for Rust workspaces and Java projects: enforces deep
+//! modules and narrow interfaces, working like `cargo check` / `cargo clippy`.
 
 mod allow;
 mod configuration;
 mod format;
 mod graph;
 mod indexing;
+mod java;
 mod lint;
 mod model;
 mod scip;
@@ -52,14 +53,16 @@ usage: {TOOL} [crate_or_mod] [--allow <path>] [--update-allow <path>]
        [--no-default-features]
 
 Runs architectural lints (module-cycle, tangle, field-leak, shallow-module,
-wide-directory, long-file) on the Cargo workspace.
+wide-directory, long-file) on the Cargo workspace, or on the Maven or Gradle
+project, around the current directory: whichever's build file is closest.
+A Rust workspace is indexed by rust-analyzer, a Java project by scip-java.
 
 options:
   <crate_or_mod>               check only one crate or module (e.g. my-crate)
   --allow <path>               suppress listed existing debt; new errors still fail
   --update-allow <path>        write current diagnostics to <path>
 
-configuration, as `cargo check --workspace` takes it:
+configuration of a Cargo workspace, as `cargo check --workspace` takes it:
   --target <triple>            check for the target triple, not the host's
   -F, --features <features>    space or comma separated list of features to
                                activate; may be given more than once
@@ -181,8 +184,7 @@ fn main() -> ExitCode {
 }
 
 fn run(options: Options) -> Result<bool, Error> {
-    let workspace = Workspace::discover()?;
-    let model = load_model(&workspace, &options.configuration)?;
+    let model = load_model(&options.configuration)?;
     let scope = match &options.scope {
         Some(query) => Some(
             lint::resolve_node(&model, query)
@@ -216,11 +218,25 @@ fn run(options: Options) -> Result<bool, Error> {
     Ok(reported.is_empty())
 }
 
-fn load_model(workspace: &Workspace, configuration: &Configuration) -> Result<Model, Error> {
-    let bytes = indexing::index(workspace, configuration)?;
+fn load_model(configuration: &Configuration) -> Result<Model, Error> {
+    let cwd = std::env::current_dir()
+        .map_err(|e| Error::new(format!("cannot read current directory: {e}")))?;
+    if let Some(project) = java::Project::around(&cwd) {
+        if !configuration.is_default() {
+            return Err(Error::new(format!(
+                "`{configuration}` chooses what cargo builds: a Java project has no such configuration"
+            )));
+        }
+        let bytes = project.index()?;
+        let index =
+            scip::read(&bytes).map_err(|e| Error::new(format!("scip-java's index: {e}")))?;
+        return model::build_java(&index, project.root());
+    }
+    let workspace = Workspace::discover_in(&cwd)?;
+    let bytes = indexing::index(&workspace, configuration)?;
     let index =
         scip::read(&bytes).map_err(|e| Error::new(format!("rust-analyzer's index: {e}")))?;
-    model::build(&index, workspace)
+    model::build(&index, &workspace)
 }
 
 #[cfg(test)]

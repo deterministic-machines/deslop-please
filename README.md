@@ -30,6 +30,36 @@ error[field-leak]: `RunQueue::items` is known outside `RunQueue`: 4 places in 2 
 deslop-please: 65535 errors, well done!
 ```
 
+### Java
+
+It also checks Maven and Gradle projects: run it anywhere inside one. A
+directory whose closest build file is a `pom.xml`, `build.gradle` or
+`settings.gradle` is read as Java, one whose closest is a `Cargo.toml` as Rust.
+The index comes from [`scip-java`](https://github.com/sourcegraph/scip-java),
+which has to be on `PATH`, with the JDK and the build tool your project uses:
+
+```bash
+cs bootstrap com.sourcegraph:scip-java_2.13:0.12.3 -M com.sourcegraph.scip_java.ScipJava -o ~/.local/bin/scip-java
+```
+
+`scip-java index` builds the project itself (`mvn clean verify -DskipTests` or
+Gradle's equivalent), so its build has to pass. Each Maven module or Gradle
+project is a crate, named by its artifact; its Java packages below the package
+all of its sources share are its modules. Sources under `src/test*/` are test
+code.
+
+```bash
+> deslop-please
+
+error[field-leak]: `RunQueue::items` is known outside `RunQueue`: 5 places in 1 module
+  --> src/main/java/com/example/runqueue/sched/Policy.java:10:1
+  ...
+    runqueue::queue::RunQueue
+      items ◀━━━ 5  runqueue::sched
+      also known outside: head
+      kept: limit
+```
+
 ### It's not my fault 
 
 Sure, let's just mute them:

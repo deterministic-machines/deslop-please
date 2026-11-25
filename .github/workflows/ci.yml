@@ -39,6 +39,16 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # The Java tests index Maven and Gradle projects with scip-java. The
+      # runner has a JDK, Maven and Gradle.
+      - name: Install scip-java
+        run: |
+          curl -fsSL https://github.com/coursier/coursier/releases/download/v2.1.27/cs-x86_64-pc-linux.gz | gzip -d > "$RUNNER_TEMP/cs"
+          chmod +x "$RUNNER_TEMP/cs"
+          mkdir -p "$HOME/.local/bin"
+          "$RUNNER_TEMP/cs" bootstrap com.sourcegraph:scip-java_2.13:0.12.3 -M com.sourcegraph.scip_java.ScipJava -o "$HOME/.local/bin/scip-java"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
       - name: Format
         run: cargo fmt --check
 

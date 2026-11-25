@@ -46,12 +46,6 @@ impl TargetKind {
 }
 
 impl Workspace {
-    pub fn discover() -> Result<Workspace, Error> {
-        let cwd = std::env::current_dir()
-            .map_err(|e| Error::new(format!("cannot read current directory: {e}")))?;
-        Workspace::discover_in(&cwd)
-    }
-
     pub fn discover_in(dir: &Path) -> Result<Workspace, Error> {
         let output = Command::new("cargo")
             .args(["metadata", "--format-version", "1", "--no-deps"])
