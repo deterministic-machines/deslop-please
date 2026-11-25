@@ -41,6 +41,7 @@ struct Options {
     scope: Option<String>,
     allow: Option<PathBuf>,
     update_allow: Option<PathBuf>,
+    json: bool,
     configuration: Configuration,
 }
 
@@ -49,7 +50,7 @@ fn usage() -> String {
         "\
 usage: {TOOL} [crate_or_mod] [--allow <path>] [--update-allow <path>]
        [--target <triple>] [-F, --features <features>] [--all-features]
-       [--no-default-features]
+       [--no-default-features] [--json]
 
 Runs architectural lints (module-cycle, tangle, field-leak, shallow-module,
 wide-directory, long-file) on the Cargo workspace.
@@ -58,6 +59,9 @@ options:
   <crate_or_mod>               check only one crate or module (e.g. my-crate)
   --allow <path>               suppress listed existing debt; new errors still fail
   --update-allow <path>        write current diagnostics to <path>
+  --json                       write diagnostics as JSON to stdout
+  -V, --version                print the version and exit
+  -h, --help                   print this help and exit
 
 configuration, as `cargo check --workspace` takes it:
   --target <triple>            check for the target triple, not the host's
@@ -78,13 +82,14 @@ A flag's value is the next word, or follows `=`: `--target=<triple>`.
 }
 
 /// The flags, and whether each takes a value. `-F` is `--features`.
-const FLAGS: [(&str, bool); 6] = [
+const FLAGS: [(&str, bool); 7] = [
     ("--allow", true),
     ("--update-allow", true),
     ("--target", true),
     ("--features", true),
     ("--all-features", false),
     ("--no-default-features", false),
+    ("--json", false),
 ];
 
 /// Reads the command line as cargo reads its own: a flag's value is the next
@@ -96,6 +101,7 @@ fn parse_arguments(arguments: &[String]) -> Result<Options, String> {
         scope: None,
         allow: None,
         update_allow: None,
+        json: false,
         configuration: Configuration::default(),
     };
     let mut given = Vec::new();
@@ -125,17 +131,31 @@ fn parse_arguments(arguments: &[String]) -> Result<Options, String> {
         };
         let configuration = &mut options.configuration;
         match flag {
-            "--allow" => options.allow = Some(PathBuf::from(value)),
-            "--update-allow" => options.update_allow = Some(PathBuf::from(value)),
+            "--allow" => {
+                if value.is_empty() {
+                    return Err("'--allow' needs a path".to_owned());
+                }
+                options.allow = Some(PathBuf::from(value));
+            }
+            "--update-allow" => {
+                if value.is_empty() {
+                    return Err("'--update-allow' needs a path".to_owned());
+                }
+                options.update_allow = Some(PathBuf::from(value));
+            }
             "--target" => configuration.target(value)?,
             "--features" => configuration.features(value),
             "--all-features" => configuration.all_features(),
             "--no-default-features" => configuration.no_default_features(),
+            "--json" => options.json = true,
             _ => unreachable!("{flag} has no meaning"),
         }
     }
     if options.allow.is_some() && options.update_allow.is_some() {
         return Err("'--allow' and '--update-allow' cannot be given together".to_owned());
+    }
+    if options.json && options.update_allow.is_some() {
+        return Err("'--json' and '--update-allow' cannot be given together".to_owned());
     }
     Ok(options)
 }
@@ -160,6 +180,13 @@ fn main() -> ExitCode {
         [help] if help == "-h" || help == "--help" || help == "help"
     ) {
         print!("{}", usage());
+        return ExitCode::SUCCESS;
+    }
+    if matches!(
+        arguments.as_slice(),
+        [version] if version == "-V" || version == "--version" || version == "version"
+    ) {
+        println!("{TOOL} {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
     let options = match parse_arguments(&arguments) {
@@ -209,10 +236,17 @@ fn run(options: Options) -> Result<bool, Error> {
         None => (all, 0, None),
     };
 
-    print!(
-        "{}",
-        format::render(&reported, fixed_allowed, allow_shown.as_deref())
-    );
+    if options.json {
+        print!(
+            "{}",
+            format::render_json(&reported, fixed_allowed, allow_shown.as_deref())
+        );
+    } else {
+        print!(
+            "{}",
+            format::render(&reported, fixed_allowed, allow_shown.as_deref())
+        );
+    }
     Ok(reported.is_empty())
 }
 
@@ -241,6 +275,7 @@ mod tests {
         let options = parsed(&["my-crate"]).unwrap();
         assert_eq!(options.scope.as_deref(), Some("my-crate"));
         assert_eq!((options.allow, options.update_allow), (None, None));
+        assert!(!options.json);
         assert!(options.configuration.is_default());
     }
 
@@ -296,6 +331,14 @@ mod tests {
     }
 
     #[test]
+    fn json_flag_is_parsed() {
+        let options = parsed(&["--json", "my-crate"]).unwrap();
+        assert!(options.json);
+        assert_eq!(options.scope.as_deref(), Some("my-crate"));
+        assert!(parsed(&["--json", "--json"]).is_err());
+    }
+
+    #[test]
     fn two_targets_are_an_error_since_rust_analyzer_indexes_one() {
         let two = [
             "--target",
@@ -326,6 +369,9 @@ mod tests {
             &["--no-default-features=true"],
             &["--allow", "a", "--allow", "b"],
             &["--allow", "a", "--update-allow", "b"],
+            &["--allow="],
+            &["--update-allow="],
+            &["--json", "--update-allow", "a"],
             &["--release"],
             &["-p", "my-crate"],
             &["my-crate", "other-crate"],

@@ -157,7 +157,8 @@ fn collect_sources(
         let hidden = path
             .file_name()
             .is_some_and(|name| name.to_string_lossy().starts_with('.'));
-        if hidden || path == target {
+        let build_target = path.file_name().is_some_and(|name| name == "target");
+        if hidden || path == target || build_target {
             continue;
         }
         // Not through symbolic links, which can loop.
@@ -204,6 +205,42 @@ fn missing(key: &str) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_files_skip_target_directories() {
+        let root =
+            std::env::temp_dir().join(format!("deslop-please-target-skip-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let package = root.join("pkg");
+        let target = package.join("target");
+        std::fs::create_dir_all(target.join("debug")).unwrap();
+        std::fs::write(
+            package.join("Cargo.toml"),
+            "[package]\nname='p'\nversion='0.1.0'\n",
+        )
+        .unwrap();
+        std::fs::write(package.join("lib.rs"), "pub fn f() {}\n").unwrap();
+        std::fs::write(target.join("generated.rs"), "pub fn g() {}\n").unwrap();
+        let workspace = Workspace {
+            root: root.clone(),
+            target_directory: root.join("target"),
+            packages: vec![Package {
+                name: "p".into(),
+                version: "0.1.0".into(),
+                crate_name: "p".into(),
+                directory: "pkg".into(),
+                targets: vec![],
+            }],
+        };
+        let files = workspace.source_files().unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(files.iter().any(|f| f == "pkg/lib.rs"), "{files:?}");
+        assert!(files.iter().any(|f| f == "pkg/Cargo.toml"), "{files:?}");
+        assert!(
+            !files.iter().any(|f| f.contains("generated.rs")),
+            "{files:?}"
+        );
+    }
 
     #[test]
     fn reads_packages_their_directories_and_targets() {

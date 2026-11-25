@@ -148,6 +148,47 @@ fn clean_workspace_exits_zero() {
 }
 
 #[test]
+fn version_flag_prints_version() {
+    let workspace = workspace("clean", None, "version");
+    for flag in ["--version", "-V", "version"] {
+        let result = run(&workspace, &[flag]);
+        assert_eq!(result.code, Some(0), "{flag}");
+        assert_eq!(
+            result.stdout.trim(),
+            format!("{TOOL} {}", env!("CARGO_PKG_VERSION")),
+            "{flag}"
+        );
+        assert!(result.stderr.is_empty(), "{flag}");
+    }
+}
+
+#[test]
+fn json_output_reports_diagnostics() {
+    let clean_workspace = workspace("clean", None, "json-clean");
+    let result = run(&clean_workspace, &["--json"]);
+    assert_eq!(result.code, Some(0));
+    let value: serde_json::Value = serde_json::from_str(&result.stdout).unwrap();
+    assert_eq!(value["ok"], true);
+    assert_eq!(value["count"], 0);
+    assert_eq!(value["fixed_allowed"], 0);
+    assert_eq!(value["diagnostics"], serde_json::json!([]));
+
+    let leak_workspace = workspace("field_leak", None, "json-field-leak");
+    let result = run(&leak_workspace, &["--json"]);
+    assert_eq!(result.code, Some(1));
+    let value: serde_json::Value = serde_json::from_str(&result.stdout).unwrap();
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["count"], 2);
+    let diagnostics = value["diagnostics"].as_array().unwrap();
+    assert_eq!(diagnostics.len(), 2);
+    assert!(
+        diagnostics
+            .iter()
+            .all(|d| d["lint"] == "field-leak" && d["file"].is_string() && d["line"].is_number())
+    );
+}
+
+#[test]
 fn a_leaked_field_leaks_however_it_is_reached_and_not_once_the_type_does_the_work() {
     let run_queue = run(&workspace("field_leak", None, "field_leak"), &[]);
     assert_eq!(run_queue.code, Some(1));

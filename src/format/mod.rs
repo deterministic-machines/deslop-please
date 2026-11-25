@@ -6,6 +6,8 @@ mod picture;
 use std::fmt::Write;
 use std::io::IsTerminal;
 
+use serde_json::{Value, json};
+
 use crate::TOOL;
 use crate::lint::Diagnostic;
 
@@ -81,6 +83,41 @@ fn stdout_has_color() -> bool {
                 && std::io::stdout().is_terminal()
         }
     }
+}
+
+pub fn render_json(
+    diagnostics: &[Diagnostic],
+    fixed_allowed: usize,
+    allow_path: Option<&str>,
+) -> String {
+    let diagnostics: Vec<Value> = diagnostics.iter().map(diagnostic_json).collect();
+    let mut out = json!({
+        "ok": diagnostics.is_empty(),
+        "count": diagnostics.len(),
+        "fixed_allowed": fixed_allowed,
+        "diagnostics": diagnostics,
+    });
+    if let Some(path) = allow_path {
+        out["allow_path"] = json!(path);
+    }
+    serde_json::to_string_pretty(&out).expect("diagnostics serialize to JSON") + "\n"
+}
+
+fn diagnostic_json(diagnostic: &Diagnostic) -> Value {
+    let mut out = json!({
+        "lint": diagnostic.lint.name(),
+        "key": diagnostic.key,
+        "message": diagnostic.message,
+        "notes": diagnostic.notes,
+    });
+    if let Some(location) = &diagnostic.location {
+        out["file"] = json!(location.file);
+        out["line"] = json!(location.line);
+    } else {
+        out["file"] = Value::Null;
+        out["line"] = Value::Null;
+    }
+    out
 }
 
 /// rustc's colors: bold red errors, bold blue gutter, bold green success.
