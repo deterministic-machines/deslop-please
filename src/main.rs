@@ -37,11 +37,18 @@ impl fmt::Display for Error {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutputFormat {
+    Text,
+    Json,
+    Sarif,
+}
+
 struct Options {
     scope: Option<String>,
     allow: Option<PathBuf>,
     update_allow: Option<PathBuf>,
-    json: bool,
+    format: OutputFormat,
     configuration: Configuration,
 }
 
@@ -50,7 +57,7 @@ fn usage() -> String {
         "\
 usage: {TOOL} [crate_or_mod] [--allow <path>] [--update-allow <path>]
        [--target <triple>] [-F, --features <features>] [--all-features]
-       [--no-default-features] [--json]
+       [--no-default-features] [--json | --sarif]
 
 Runs architectural lints (module-cycle, tangle, field-leak, shallow-module,
 wide-directory, long-file) on the Cargo workspace.
@@ -60,6 +67,7 @@ options:
   --allow <path>               suppress listed existing debt; new errors still fail
   --update-allow <path>        write current diagnostics to <path>
   --json                       write diagnostics as JSON to stdout
+  --sarif                      write diagnostics as SARIF 2.1.0 to stdout
   -V, --version                print the version and exit
   -h, --help                   print this help and exit
 
@@ -82,7 +90,7 @@ A flag's value is the next word, or follows `=`: `--target=<triple>`.
 }
 
 /// The flags, and whether each takes a value. `-F` is `--features`.
-const FLAGS: [(&str, bool); 7] = [
+const FLAGS: [(&str, bool); 8] = [
     ("--allow", true),
     ("--update-allow", true),
     ("--target", true),
@@ -90,6 +98,7 @@ const FLAGS: [(&str, bool); 7] = [
     ("--all-features", false),
     ("--no-default-features", false),
     ("--json", false),
+    ("--sarif", false),
 ];
 
 /// Reads the command line as cargo reads its own: a flag's value is the next
@@ -101,7 +110,7 @@ fn parse_arguments(arguments: &[String]) -> Result<Options, String> {
         scope: None,
         allow: None,
         update_allow: None,
-        json: false,
+        format: OutputFormat::Text,
         configuration: Configuration::default(),
     };
     let mut given = Vec::new();
@@ -147,15 +156,34 @@ fn parse_arguments(arguments: &[String]) -> Result<Options, String> {
             "--features" => configuration.features(value),
             "--all-features" => configuration.all_features(),
             "--no-default-features" => configuration.no_default_features(),
-            "--json" => options.json = true,
+            "--json" => {
+                if options.format == OutputFormat::Sarif {
+                    return Err("'--json' and '--sarif' cannot be given together".to_owned());
+                }
+                options.format = OutputFormat::Json;
+            }
+            "--sarif" => {
+                if options.format == OutputFormat::Json {
+                    return Err("'--json' and '--sarif' cannot be given together".to_owned());
+                }
+                options.format = OutputFormat::Sarif;
+            }
             _ => unreachable!("{flag} has no meaning"),
         }
     }
     if options.allow.is_some() && options.update_allow.is_some() {
         return Err("'--allow' and '--update-allow' cannot be given together".to_owned());
     }
-    if options.json && options.update_allow.is_some() {
-        return Err("'--json' and '--update-allow' cannot be given together".to_owned());
+    if options.update_allow.is_some() {
+        match options.format {
+            OutputFormat::Text => {}
+            OutputFormat::Json => {
+                return Err("'--json' and '--update-allow' cannot be given together".to_owned());
+            }
+            OutputFormat::Sarif => {
+                return Err("'--sarif' and '--update-allow' cannot be given together".to_owned());
+            }
+        }
     }
     Ok(options)
 }
@@ -236,16 +264,16 @@ fn run(options: Options) -> Result<bool, Error> {
         None => (all, 0, None),
     };
 
-    if options.json {
-        print!(
-            "{}",
-            format::render_json(&reported, fixed_allowed, allow_shown.as_deref())
-        );
-    } else {
-        print!(
+    match options.format {
+        OutputFormat::Text => print!(
             "{}",
             format::render(&reported, fixed_allowed, allow_shown.as_deref())
-        );
+        ),
+        OutputFormat::Json => print!(
+            "{}",
+            format::render_json(&reported, fixed_allowed, allow_shown.as_deref())
+        ),
+        OutputFormat::Sarif => print!("{}", format::render_sarif(&reported)),
     }
     Ok(reported.is_empty())
 }
@@ -275,7 +303,7 @@ mod tests {
         let options = parsed(&["my-crate"]).unwrap();
         assert_eq!(options.scope.as_deref(), Some("my-crate"));
         assert_eq!((options.allow, options.update_allow), (None, None));
-        assert!(!options.json);
+        assert_eq!(options.format, OutputFormat::Text);
         assert!(options.configuration.is_default());
     }
 
@@ -331,11 +359,18 @@ mod tests {
     }
 
     #[test]
-    fn json_flag_is_parsed() {
+    fn json_and_sarif_flags_are_parsed() {
         let options = parsed(&["--json", "my-crate"]).unwrap();
-        assert!(options.json);
+        assert_eq!(options.format, OutputFormat::Json);
         assert_eq!(options.scope.as_deref(), Some("my-crate"));
         assert!(parsed(&["--json", "--json"]).is_err());
+
+        let options = parsed(&["--sarif", "my-crate"]).unwrap();
+        assert_eq!(options.format, OutputFormat::Sarif);
+        assert_eq!(options.scope.as_deref(), Some("my-crate"));
+        assert!(parsed(&["--sarif", "--sarif"]).is_err());
+        assert!(parsed(&["--json", "--sarif"]).is_err());
+        assert!(parsed(&["--sarif", "--json"]).is_err());
     }
 
     #[test]
@@ -372,6 +407,8 @@ mod tests {
             &["--allow="],
             &["--update-allow="],
             &["--json", "--update-allow", "a"],
+            &["--sarif", "--update-allow", "a"],
+            &["--sarif=true"],
             &["--release"],
             &["-p", "my-crate"],
             &["my-crate", "other-crate"],

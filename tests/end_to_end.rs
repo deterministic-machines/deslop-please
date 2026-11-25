@@ -189,6 +189,49 @@ fn json_output_reports_diagnostics() {
 }
 
 #[test]
+fn sarif_output_reports_diagnostics() {
+    let clean_workspace = workspace("clean", None, "sarif-clean");
+    let result = run(&clean_workspace, &["--sarif"]);
+    assert_eq!(result.code, Some(0));
+    let value: serde_json::Value = serde_json::from_str(&result.stdout).unwrap();
+    assert_eq!(value["version"], "2.1.0");
+    assert_eq!(
+        value["$schema"],
+        "https://json.schemastore.org/sarif-2.1.0.json"
+    );
+    let run_obj = &value["runs"][0];
+    assert_eq!(run_obj["tool"]["driver"]["name"], TOOL);
+    assert_eq!(
+        run_obj["tool"]["driver"]["rules"].as_array().unwrap().len(),
+        6
+    );
+    assert_eq!(run_obj["results"], serde_json::json!([]));
+
+    let leak_workspace = workspace("field_leak", None, "sarif-field-leak");
+    let result = run(&leak_workspace, &["--sarif"]);
+    assert_eq!(result.code, Some(1));
+    let value: serde_json::Value = serde_json::from_str(&result.stdout).unwrap();
+    let results = value["runs"][0]["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().all(|r| {
+        r["ruleId"] == "field-leak"
+            && r["level"] == "error"
+            && r["partialFingerprints"]["deslop-please/v1"].is_string()
+            && r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"].is_string()
+            && r["locations"][0]["physicalLocation"]["region"]["startLine"].is_number()
+    }));
+
+    let cycle_workspace = workspace("module_cycle", None, "sarif-module-cycle");
+    let result = run(&cycle_workspace, &["--sarif"]);
+    assert_eq!(result.code, Some(1));
+    let value: serde_json::Value = serde_json::from_str(&result.stdout).unwrap();
+    let results = value["runs"][0]["results"].as_array().unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["ruleId"], "module-cycle");
+    assert_eq!(results[0]["relatedLocations"].as_array().unwrap().len(), 2);
+}
+
+#[test]
 fn a_leaked_field_leaks_however_it_is_reached_and_not_once_the_type_does_the_work() {
     let run_queue = run(&workspace("field_leak", None, "field_leak"), &[]);
     assert_eq!(run_queue.code, Some(1));

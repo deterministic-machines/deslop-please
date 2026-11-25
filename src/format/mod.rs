@@ -2,6 +2,7 @@
 //! terminal, with a picture under each report.
 
 mod picture;
+mod sarif;
 
 use std::fmt::Write;
 use std::io::IsTerminal;
@@ -118,6 +119,10 @@ fn diagnostic_json(diagnostic: &Diagnostic) -> Value {
         out["line"] = Value::Null;
     }
     out
+}
+
+pub fn render_sarif(diagnostics: &[Diagnostic]) -> String {
+    sarif::render(diagnostics)
 }
 
 /// rustc's colors: bold red errors, bold blue gutter, bold green success.
