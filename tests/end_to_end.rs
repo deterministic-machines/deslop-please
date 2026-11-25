@@ -719,15 +719,19 @@ fn a_java_field_leaks_through_public_fields_but_not_through_a_getter_that_copies
     assert!(run_queue.stdout.contains(
         "    runqueue::queue::RunQueue\n\
          \x20     items ◀━━━ 5  runqueue::sched\n\
-         \x20     also known outside: head\n\
+         \x20     also known outside: head, mode\n\
          \x20     kept: limit\n"
     ));
-    // The test sources call into `app`, which is no use.
+    // `mode` is a mutable `build.Mode`: neither `Launcher`, in the default
+    // package, nor the package's name hides it, and the enum `app.Mode`
+    // does not stand in for it. Reading the enum `status` and naming `RunQueue.class` are no use
+    // of a field, and the test sources call into `app`, which is none either.
     assert_eq!(
         keys(&project),
         [
             "field-leak runqueue::queue::RunQueue::head",
             "field-leak runqueue::queue::RunQueue::items",
+            "field-leak runqueue::queue::RunQueue::mode",
         ]
     );
 }
@@ -773,6 +777,20 @@ fn a_gradle_project_is_a_package_for_each_of_its_projects() {
         variant_keys("java_gradle", None),
         ["module-cycle core::kinds,core::socket"]
     );
+}
+
+#[test]
+fn a_java_build_that_fails_is_an_error_that_shows_mavens_errors() {
+    if !has("scip-java") || !has("mvn") {
+        return;
+    }
+    let project = workspace("java_field_leak", None, "java_build_failure");
+    let broken = project.join("src/main/java/com/example/runqueue/app/Broken.java");
+    std::fs::write(&broken, "package com.example.runqueue.app;\nclass Broken {").unwrap();
+    let run = run(&project, &[]);
+    assert_eq!(run.code, Some(2));
+    assert!(run.stderr.contains("scip-java index failed"));
+    assert!(run.stderr.contains("[ERROR]") && run.stderr.contains("Broken.java"));
 }
 
 #[test]

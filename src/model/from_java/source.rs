@@ -1,6 +1,6 @@
 //! A Java file's text, read as tokens, as far as the model needs it: where
 //! its `package` and `import` declarations are, what code does with a name it
-//! writes, and the tokens of a method's body. Comments are left out; a
+//! writes, how a field's type is written, and the tokens of a method's body. Comments are left out; a
 //! string, text block or character is one token.
 
 use crate::scip::{Position, Range};
@@ -16,43 +16,8 @@ const ASSIGNMENTS: [&str; 12] = [
     "=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=", ">>>=",
 ];
 
-/// Types whose values code can only read: what is copied, and what cannot change.
-const SCALARS: [&str; 20] = [
-    "boolean",
-    "byte",
-    "char",
-    "short",
-    "int",
-    "long",
-    "float",
-    "double",
-    "Boolean",
-    "Byte",
-    "Character",
-    "Short",
-    "Integer",
-    "Long",
-    "Float",
-    "Double",
-    "String",
-    "BigInteger",
-    "BigDecimal",
-    "Class",
-];
-
-const MODIFIERS: [&str; 12] = [
-    "public",
-    "protected",
-    "private",
-    "static",
-    "final",
-    "transient",
-    "volatile",
-    "abstract",
-    "default",
-    "synchronized",
-    "native",
-    "strictfp",
+const PRIMITIVES: [&str; 8] = [
+    "boolean", "byte", "char", "short", "int", "long", "float", "double",
 ];
 
 struct Token {
@@ -78,6 +43,20 @@ pub enum Access {
     Value,
 }
 
+/// How a field's type is written, as far as what it holds can be told by it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Written {
+    Primitive,
+    /// A class, by the name it ends with, which the index resolves: `Status`,
+    /// `java.util.UUID`, and `Class` in `Class<?>`, with `generic` set.
+    Class {
+        name: Range,
+        generic: bool,
+    },
+    /// An array, a type variable's bound, or anything else.
+    Other,
+}
+
 /// What a name is written on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Qualifier {
@@ -93,11 +72,6 @@ impl Source {
     pub fn new(text: String) -> Source {
         let tokens = read(&text);
         Source { text, tokens }
-    }
-
-    /// Every token's text, in order.
-    fn texts(&self) -> Vec<&str> {
-        (0..self.tokens.len()).map(|at| self.text(at)).collect()
     }
 
     fn text(&self, at: usize) -> &str {
@@ -198,6 +172,53 @@ impl Source {
         Some((open + 1..close).map(|at| self.text(at)).collect())
     }
 
+    /// How the type of the field named at `name` is written: by the tokens
+    /// before the name.
+    pub fn type_before(&self, name: Range) -> Written {
+        let Some(at) = self.at(name).and_then(|at| at.checked_sub(1)) else {
+            return Written::Other;
+        };
+        let range = |at: usize| Range {
+            start: self.tokens[at].start,
+            end: self.tokens[at].end,
+        };
+        match self.text(at) {
+            text if PRIMITIVES.contains(&text) => Written::Primitive,
+            text if is_name(text) => Written::Class {
+                name: range(at),
+                generic: false,
+            },
+            ">" => {
+                let mut depth = 0usize;
+                for open in (0..=at).rev() {
+                    match self.text(open) {
+                        ">" => depth += 1,
+                        "<" => depth -= 1,
+                        _ => {}
+                    }
+                    if depth == 0 {
+                        return match open.checked_sub(1) {
+                            Some(head) if is_name(self.text(head)) => Written::Class {
+                                name: range(head),
+                                generic: true,
+                            },
+                            _ => Written::Other,
+                        };
+                    }
+                }
+                Written::Other
+            }
+            _ => Written::Other,
+        }
+    }
+
+    /// The text of the token before the one at `range`: `enum` before the
+    /// name of an enum.
+    pub fn before(&self, range: Range) -> Option<&str> {
+        let at = self.at(range)?.checked_sub(1)?;
+        Some(self.text(at))
+    }
+
     /// The bracket that closes the one at `open`, or the last token.
     fn closing(&self, open: usize) -> usize {
         let mut depth = 0usize;
@@ -214,39 +235,6 @@ impl Source {
             }
         }
         self.tokens.len() - 1
-    }
-}
-
-/// Whether a field declared by `signature`, `private final List<Integer> items`,
-/// holds a value code can only read: a primitive, a boxed one, a string, a
-/// big number, a class, or a constant of an enum whose name `is_enum` knows.
-pub fn holds_scalar(signature: &str, is_enum: impl Fn(&str) -> bool) -> bool {
-    let source = Source::new(signature.to_owned());
-    let texts = source.texts();
-    let mut at = 0;
-    while at < texts.len() {
-        if texts[at] == "@" {
-            at += 2;
-            while texts.get(at) == Some(&".") {
-                at += 2;
-            }
-            if texts.get(at) == Some(&"(") {
-                at = source.closing(at) + 1;
-            }
-        } else if MODIFIERS.contains(&texts[at]) {
-            at += 1;
-        } else {
-            break;
-        }
-    }
-    // The type, then the name.
-    let ty = texts
-        .get(at..texts.len().saturating_sub(1))
-        .unwrap_or_default();
-    match ty {
-        [name] | [.., ".", name] => SCALARS.contains(name) || is_enum(name),
-        ["Class", "<", ..] => true,
-        _ => false,
     }
 }
 
@@ -342,7 +330,7 @@ mod tests {
     #[test]
     fn comments_strings_and_characters_hide_names() {
         let source = Source::new("a /* b */ c // d\n\"e \\\" f\" 'g' \"\"\"\nh\"\"\" i".into());
-        let texts = source.texts();
+        let texts: Vec<&str> = (0..source.tokens.len()).map(|at| source.text(at)).collect();
         assert_eq!(
             texts,
             ["a", "c", "\"e \\\" f\"", "'g'", "\"\"\"\nh\"\"\"", "i"]
@@ -440,21 +428,24 @@ mod tests {
     }
 
     #[test]
-    fn fields_that_hold_scalars() {
-        let holds_scalar = |signature| holds_scalar(signature, |name| name == "Strictness");
-        assert!(holds_scalar("private Strictness strictness"));
-        assert!(holds_scalar("public int head"));
-        assert!(holds_scalar(
-            "@Nullable private final java.lang.String name"
-        ));
-        assert!(holds_scalar("@A(x = 1) Integer count"));
-        assert!(holds_scalar("@javax.annotation.Nullable long id"));
-        assert!(!holds_scalar("public final List<Integer> items"));
-        assert!(!holds_scalar("int[] slots"));
-        assert!(holds_scalar("private final Class<? super T> rawType"));
-        assert!(!holds_scalar("List<String> names"));
-        assert!(!holds_scalar("private Inner inner"));
-        assert!(!holds_scalar("private static"));
-        assert!(!holds_scalar(""));
+    fn how_a_fields_type_is_written() {
+        let written = |text: &str| {
+            let source = Source::new(text.into());
+            let name = find(&source, "f", 0);
+            match source.type_before(name) {
+                Written::Class { name, generic } => {
+                    let at = source.at(name).unwrap();
+                    format!("{}{}", source.text(at), if generic { "<>" } else { "" })
+                }
+                other => format!("{other:?}"),
+            }
+        };
+        assert_eq!(written("@A(x = 1) private final int f;"), "Primitive");
+        assert_eq!(written("@Nullable java.util.UUID f;"), "UUID");
+        assert_eq!(written("Class<? super List<T>> f;"), "Class<>");
+        assert_eq!(written("int[] f;"), "Other");
+        assert_eq!(written("String... f"), "Other");
+        let source = Source::new("public enum Mode {}".into());
+        assert_eq!(source.before(find(&source, "Mode", 0)), Some("enum"));
     }
 }

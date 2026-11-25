@@ -43,10 +43,18 @@ cs bootstrap com.sourcegraph:scip-java_2.13:0.12.3 -M com.sourcegraph.scip_java.
 ```
 
 `scip-java index` builds the project itself (`mvn clean verify -DskipTests` or
-Gradle's equivalent), so its build has to pass. Each Maven module or Gradle
+Gradle's equivalent), so its build has to pass. Each time a source changes,
+that build **cleans `target/` or `build/` in every module**, under whatever an
+IDE or a running server is using, and it runs the project's Maven plugins and
+Gradle scripts: as `cargo check` runs `build.rs`, only point it at code you
+trust. Each Maven module or Gradle
 project is a crate, named by its artifact; its Java packages below the package
 all of its sources share are its modules. Sources under `src/test*/` are test
-code.
+code. Reading a field is no leak when what it holds cannot change: a
+primitive, a boxed number, a `String`, `UUID`, `BigDecimal`, `Class` or
+`java.time` value, or an enum or record of the project's. A field of any
+other type that a getter hands out is lent, so a caller that passes the
+object on knows it.
 
 ```bash
 > deslop-please

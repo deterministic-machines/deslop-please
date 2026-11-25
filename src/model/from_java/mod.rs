@@ -21,26 +21,65 @@ use crate::Error;
 use crate::model::{
     File, FileId, Item, ItemId, ItemKind, Model, NodeId, NodeKind, Reference, Tree, Wrapper,
 };
-use crate::scip::{Document, Index, Kind, Place, Range, Symbol, SymbolInformation};
-use source::{Access, Qualifier, Source};
+use crate::scip::{Document, Index, Kind, Occurrence, Place, Range, Symbol, SymbolInformation};
+use source::{Access, Qualifier, Source, Written};
 
 /// The local symbol that stands for the implicit `this` of a method.
 const THIS: &str = "this";
 
-/// Directories that hold what a build writes, such as generated sources.
-const OUTPUTS: [&str; 3] = ["target", "build", "out"];
+// What scip-java 0.12 writes, which `scip.proto` and its signatures say:
+// `SymbolInformation.Kind`'s `StaticField` and `StaticMethod`, which a field
+// or method declared `static` has; an enum constant's signature, `Mode.FAST
+// /* ordinal 0 */`; and the descriptor of a constructor. A parameter's local
+// has no kind; a variable's has one.
+const STATIC_FIELD: u64 = 79;
+const STATIC_METHOD: u64 = 80;
+const ENUM_CONSTANT: &str = "/* ordinal";
+const CONSTRUCTOR: &str = "`<init>`(";
+
+/// Classes whose instances cannot change: whoever holds one can only read it.
+const VALUE_CLASSES: [&str; 26] = [
+    "java/lang/Boolean#",
+    "java/lang/Byte#",
+    "java/lang/Character#",
+    "java/lang/Short#",
+    "java/lang/Integer#",
+    "java/lang/Long#",
+    "java/lang/Float#",
+    "java/lang/Double#",
+    "java/lang/String#",
+    "java/lang/Class#",
+    "java/math/BigInteger#",
+    "java/math/BigDecimal#",
+    "java/util/UUID#",
+    "java/time/Duration#",
+    "java/time/Instant#",
+    "java/time/LocalDate#",
+    "java/time/LocalDateTime#",
+    "java/time/LocalTime#",
+    "java/time/MonthDay#",
+    "java/time/OffsetDateTime#",
+    "java/time/OffsetTime#",
+    "java/time/Period#",
+    "java/time/Year#",
+    "java/time/YearMonth#",
+    "java/time/ZoneId#",
+    "java/time/ZonedDateTime#",
+];
 
 pub fn build(index: &Index, root: &Path) -> Result<Model, Error> {
     let mut units = Vec::new();
     for document in &index.documents {
         let path: &str = &document.path;
-        let generated = path.split('/').any(|part| OUTPUTS.contains(&part));
-        if !path.ends_with(".java") || generated {
+        let outside = path.starts_with('/') || path.split('/').any(|part| part == "..");
+        if !path.ends_with(".java") || outside || crate::java::is_generated(path) {
             continue;
         }
         let on_disk = root.join(path);
-        let text = std::fs::read_to_string(&on_disk)
+        let bytes = std::fs::read(&on_disk)
             .map_err(|e| Error::new(format!("{}: {e}", on_disk.display())))?;
+        // A source in Latin-1 reads with its other characters replaced.
+        let text = String::from_utf8_lossy(&bytes).into_owned();
         units.push(Unit::new(document, text));
     }
     let mut builder = Builder::new(&units, root);
@@ -208,10 +247,11 @@ impl<'a> Builder<'a> {
                 self.tree.child(parent, NodeKind::Package, &name)
             };
             placed.push((directory, node));
+            // `module-info.java` and the default package share no package.
             let packages = self
                 .units
                 .iter()
-                .filter(|unit| unit.directory == directory)
+                .filter(|unit| unit.directory == directory && !unit.package.is_empty())
                 .map(|unit| unit.package.as_slice());
             self.directories
                 .insert(directory, (node, common_prefix(packages)));
@@ -336,12 +376,12 @@ impl<'a> Builder<'a> {
         let kind = match symbol.kind() {
             Kind::Type => ItemKind::Type,
             Kind::Method => ItemKind::Function,
-            Kind::Term if signature.contains("/* ordinal") => ItemKind::Variant,
+            Kind::Term if signature.contains(ENUM_CONSTANT) => ItemKind::Variant,
             Kind::Term if is_static => ItemKind::Constant,
             Kind::Term => ItemKind::Field,
             _ => ItemKind::Other,
         };
-        let constructor = symbol.text().contains("`<init>`(");
+        let constructor = symbol.text().contains(CONSTRUCTOR);
         let id = ItemId::new(self.items.len());
         self.items.push(Item {
             name: symbol.item_name(),
@@ -401,41 +441,77 @@ impl<'a> Builder<'a> {
         }
     }
 
-    /// The fields that hold values code can only read, as their declarations say.
+    /// The fields that hold values code can only read: a primitive, a value
+    /// class of the JDK's, or an enum or record of the project's, as the
+    /// index resolves the name of its type.
     fn scalar_fields(&self) -> HashSet<ItemId> {
-        const ENUM: u64 = 11;
-        let enums: HashSet<&str> = self
-            .symbols
+        let values: HashSet<ItemId> = self
+            .definitions
             .iter()
-            .filter(|(text, named)| {
-                matches!(named, Named::Item(_))
-                    && self.information.get(*text).is_some_and(|i| i.kind == ENUM)
-            })
-            .filter_map(|(_, named)| match named {
-                Named::Item(item) => Some(simple(&self.items[item.index()].name)),
-                _ => None,
+            .filter_map(|(&item, definition)| {
+                let definition = (*definition)?;
+                let keyword = self.units[definition.unit].source.before(definition.name);
+                let immutable = self.items[item.index()].kind == ItemKind::Type
+                    && matches!(keyword, Some("enum" | "record"));
+                immutable.then_some(item)
             })
             .collect();
-        self.symbols
-            .iter()
-            .filter_map(|(&text, &named)| match named {
-                Named::Item(item) if self.items[item.index()].kind == ItemKind::Field => {
-                    let information = self.information.get(text)?;
-                    let is_enum = |name: &str| enums.contains(name);
-                    source::holds_scalar(information.signature, is_enum).then_some(item)
-                }
-                _ => None,
-            })
-            .collect()
+        let mut scalars = HashSet::new();
+        for (&field, definition) in &self.definitions {
+            let Some(definition) =
+                definition.filter(|_| self.items[field.index()].kind == ItemKind::Field)
+            else {
+                continue;
+            };
+            let unit = &self.units[definition.unit];
+            let holds_value = match unit.source.type_before(definition.name) {
+                Written::Primitive => true,
+                Written::Class { name, generic } => unit
+                    .document
+                    .occurrences
+                    .iter()
+                    .find(|o| o.range == name && !o.definition)
+                    .is_some_and(|o| match self.symbols.get(o.symbol) {
+                        Some(Named::Item(ty)) => !generic && values.contains(ty),
+                        Some(Named::Outside(_)) => {
+                            let named = |class: &&str| o.symbol.ends_with(&format!(" {class}"));
+                            VALUE_CLASSES.iter().any(named)
+                                && (!generic || o.symbol.ends_with(" java/lang/Class#"))
+                        }
+                        _ => false,
+                    }),
+                Written::Other => false,
+            };
+            if holds_value {
+                scalars.insert(field);
+            }
+        }
+        scalars
     }
 
     /// Every forwarder and accessor.
     fn wrappers(&self, scalars: &HashSet<ItemId>) -> HashMap<ItemId, Wrapper> {
+        let documents: Vec<DocumentNames> = self
+            .units
+            .iter()
+            .map(|unit| {
+                let mut occurrences: Vec<&Occurrence<'a>> =
+                    unit.document.occurrences.iter().collect();
+                occurrences.sort_by_key(|o| o.range.start);
+                let kinds = unit
+                    .document
+                    .symbols
+                    .iter()
+                    .map(|information| (information.symbol, information.kind))
+                    .collect();
+                DocumentNames { occurrences, kinds }
+            })
+            .collect();
         let mut definitions = forwarders::Definitions::default();
         for (&function, definition) in &self.definitions {
             let item = &self.items[function.index()];
             if let (ItemKind::Function, Some(definition)) = (item.kind, definition) {
-                let names = self.names(function, definition);
+                let names = self.names(function, definition, &documents[definition.unit]);
                 definitions.add(function, !item.trait_impl, &names);
             }
         }
@@ -512,27 +588,13 @@ impl<'a> Builder<'a> {
         let field = field?;
         let unit = &self.units[definition.unit];
         let body = unit.source.body(definition.block, definition.name)?;
-        let name = simple(&self.items[field.index()].name);
-        let body = match body.as_slice() {
-            ["this", ".", rest @ ..] | ["return", "this", ".", rest @ ..] => {
-                let returns = body[0] == "return";
-                (returns, rest)
-            }
-            ["return", rest @ ..] => (true, rest),
-            rest => (false, rest),
-        };
-        match body {
-            (true, [written, ";"]) if *written == name => Some(getter(field, scalars)),
-            (false, [written, "=", parameter, ";"])
-                if *written == name && is_identifier(parameter) =>
-            {
-                Some(Wrapper::Accessor {
-                    lent: vec![field],
-                    copied: Vec::new(),
-                    to_read: false,
-                })
-            }
-            _ => None,
+        match shape(&body, simple(&self.items[field.index()].name))? {
+            Shape::Getter => Some(getter(field, scalars)),
+            Shape::Setter => Some(Wrapper::Accessor {
+                lent: vec![field],
+                copied: Vec::new(),
+                to_read: false,
+            }),
         }
     }
 
@@ -540,22 +602,22 @@ impl<'a> Builder<'a> {
     /// are told by them. A method that takes `self` has `this` for its first
     /// parameter, and names a field or such a method on it unless the code
     /// writes another receiver.
-    fn names(&self, function: ItemId, definition: &Definition) -> Vec<Name<'a>> {
+    fn names(
+        &self,
+        function: ItemId,
+        definition: &Definition,
+        document: &DocumentNames<'a>,
+    ) -> Vec<Name<'a>> {
         let unit = &self.units[definition.unit];
         let takes_self = self.items[function.index()].takes_self;
-        let kinds: HashMap<&str, u64> = unit
-            .document
-            .symbols
-            .iter()
-            .map(|information| (information.symbol, information.kind))
-            .collect();
-        let mut occurrences: Vec<_> = unit
-            .document
+        let kinds = &document.kinds;
+        let first = document
             .occurrences
+            .partition_point(|o| o.range.start <= definition.name.start);
+        let occurrences = document.occurrences[first..]
             .iter()
-            .filter(|o| definition.block.holds(o.range) && o.range.start > definition.name.start)
-            .collect();
-        occurrences.sort_by_key(|o| o.range.start);
+            .copied()
+            .take_while(|o| definition.block.holds(o.range));
         let mut names = Vec::new();
         if takes_self {
             names.push(Name::Parameter {
@@ -634,8 +696,39 @@ impl<'a> Builder<'a> {
     }
 }
 
-const STATIC_FIELD: u64 = 79;
-const STATIC_METHOD: u64 = 80;
+/// A document's occurrences in order, and the kinds of the symbols it
+/// describes, for telling forwarders.
+struct DocumentNames<'a> {
+    occurrences: Vec<&'a Occurrence<'a>>,
+    kinds: HashMap<&'a str, u64>,
+}
+
+/// What an accessor's body does with its field.
+#[derive(Debug, PartialEq, Eq)]
+enum Shape {
+    /// `return items;`, `return this.items;`
+    Getter,
+    /// `head = value;`, `this.head = value;`, with a name on the right.
+    Setter,
+}
+
+/// What `body`, as tokens, does with the field `name`, if all it does is
+/// return it or set it.
+fn shape(body: &[&str], name: &str) -> Option<Shape> {
+    let (returns, rest) = match body {
+        ["return", "this", ".", rest @ ..] => (true, rest),
+        ["return", rest @ ..] => (true, rest),
+        ["this", ".", rest @ ..] => (false, rest),
+        rest => (false, rest),
+    };
+    match (returns, rest) {
+        (true, [written, ";"]) if *written == name => Some(Shape::Getter),
+        (false, [written, "=", value, ";"]) if *written == name && is_identifier(value) => {
+            Some(Shape::Setter)
+        }
+        _ => None,
+    }
+}
 
 /// An accessor that returns `field`: it hands out a copy of a scalar, and
 /// lends anything else.
@@ -723,6 +816,32 @@ fn is_under(path: &str, directory: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_getter_and_a_setter_by_their_bodies() {
+        assert_eq!(shape(&["return", "head", ";"], "head"), Some(Shape::Getter));
+        assert_eq!(
+            shape(&["return", "this", ".", "head", ";"], "head"),
+            Some(Shape::Getter)
+        );
+        assert_eq!(
+            shape(&["this", ".", "head", "=", "head", ";"], "head"),
+            Some(Shape::Setter)
+        );
+        assert_eq!(
+            shape(&["head", "=", "next", ";"], "head"),
+            Some(Shape::Setter)
+        );
+        // A literal, a computation, another field, or more than one statement.
+        assert_eq!(shape(&["head", "=", "0", ";"], "head"), None);
+        assert_eq!(shape(&["head", "=", "null", ";"], "head"), None);
+        assert_eq!(shape(&["return", "head", "+", "1", ";"], "head"), None);
+        assert_eq!(shape(&["return", "tail", ";"], "head"), None);
+        assert_eq!(
+            shape(&["log", "(", ")", ";", "return", "head", ";"], "head"),
+            None
+        );
+    }
 
     #[test]
     fn the_package_all_sources_share() {
