@@ -18,8 +18,11 @@ checker. Test files are analyzed and marked as test code.
 test package is `path_test`. Types (aliases included), functions, methods,
 struct fields (also of nested anonymous structs), interface methods, and
 package-level constants and variables are items. A method belongs to the type
-it is declared on, through an alias. Types declared inside functions are not
-items. scip-go gives the references by name; the analyzer (`facts.go`) adds
+it is declared on, through an alias. A constant of a type its own package
+declares is one of that type's values, as a Rust enum's variant is, so an enum
+and the `String` method that names its values make no tangle. Types declared
+inside functions are not items. scip-go gives the references by name; the
+analyzer (`facts.go`) adds
 what the code does with each use, the accessors and forwarders, and the
 references the source does not spell out.
 

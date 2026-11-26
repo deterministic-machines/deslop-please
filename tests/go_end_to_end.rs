@@ -303,6 +303,12 @@ fn go_workspace_modules_outside_the_go_work_directory_are_analyzed() {
 }
 
 #[test]
+fn go_typed_constants_are_values_of_their_type_so_an_enum_and_its_string_make_no_tangle() {
+    let output = lint(&workspace("go_enum"), 0);
+    assert_eq!(output["diagnostics"], serde_json::json!([]));
+}
+
+#[test]
 fn go_analyzer_unit_tests_pass() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/go_frontend");
     let output = Command::new("go")

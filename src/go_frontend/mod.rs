@@ -326,6 +326,7 @@ pub fn build(workspace: &Workspace) -> Result<Model, Error> {
                 "function" => ItemKind::Function,
                 "field" => ItemKind::Field,
                 "constant" => ItemKind::Constant,
+                "variant" => ItemKind::Variant,
                 other => return Err(Error::new(format!("unknown Go declaration kind {other}"))),
             };
             let at = pos(&decl["name_pos"]);

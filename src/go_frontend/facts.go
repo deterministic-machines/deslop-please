@@ -1120,9 +1120,20 @@ func (u *Universe) declarations(p *Package, f *ast.File, path, importPath string
 					})
 				case *ast.ValueSpec:
 					for _, name := range s.Names {
-						if name.Name != "_" {
-							add(name, "constant", nil, s, false)
+						if name.Name == "_" {
+							continue
 						}
+						// A constant of a type its own package declares is
+						// one of that type's values, as an enum's variant.
+						if c, ok := info.Defs[name].(*types.Const); ok {
+							if named, ok := types.Unalias(c.Type()).(*types.Named); ok && named.Obj().Pkg() == p.types {
+								if owner := u.loc(named.Origin().Obj()); owner != nil {
+									add(name, "variant", owner, s, false)
+									continue
+								}
+							}
+						}
+						add(name, "constant", nil, s, false)
 					}
 				}
 			}
