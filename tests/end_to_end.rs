@@ -232,6 +232,41 @@ fn sarif_output_reports_diagnostics() {
 }
 
 #[test]
+fn explain_prints_lint_rationale() {
+    let workspace = workspace("clean", None, "explain");
+    let result = run(&workspace, &["--explain", "field-leak"]);
+    assert_eq!(result.code, Some(0));
+    assert!(result.stdout.contains("field-leak"));
+    assert!(result.stdout.contains("Why it matters:"));
+    assert!(result.stdout.contains("How to fix:"));
+
+    let result = run(&workspace, &["--explain", "nope"]);
+    assert_eq!(result.code, Some(2));
+    assert!(result.stderr.contains("unknown lint 'nope'"));
+}
+
+#[test]
+fn audit_reports_module_interfaces() {
+    let clean_workspace = workspace("clean", None, "audit-clean");
+    let result = run(&clean_workspace, &["--audit"]);
+    assert_eq!(result.code, Some(0));
+    assert!(result.stdout.contains("MODULE"));
+    assert!(result.stdout.contains("modules audited"));
+
+    let leak_workspace = workspace("field_leak", None, "audit-field-leak");
+    let result = run(&leak_workspace, &["--audit", "--json"]);
+    assert_eq!(result.code, Some(0));
+    let value: serde_json::Value = serde_json::from_str(&result.stdout).unwrap();
+    let modules = value["modules"].as_array().unwrap();
+    assert!(!modules.is_empty());
+    assert!(
+        modules
+            .iter()
+            .any(|m| m["module"].is_string() && m["shown"].is_number())
+    );
+}
+
+#[test]
 fn a_leaked_field_leaks_however_it_is_reached_and_not_once_the_type_does_the_work() {
     let run_queue = run(&workspace("field_leak", None, "field_leak"), &[]);
     assert_eq!(run_queue.code, Some(1));

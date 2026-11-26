@@ -55,6 +55,124 @@ impl Lint {
             _ => None,
         }
     }
+
+    pub fn explain(self) -> &'static str {
+        match self {
+            Lint::ModuleCycle => {
+                "\
+module-cycle
+
+Sibling modules that use each other in a circle, so there is no order to read
+them in. A module uses a sibling when code written in it or inside it names an
+item written in the sibling or inside it.
+
+Why it matters:
+- A reader cannot learn one module before the other; they must understand both.
+- The modules are not independent layers; a change in one can force a change in
+  the other.
+
+How to fix:
+- Find the narrowest tie in the report and ask what abstraction is missing.
+- Move the code or type to the module that owns it, or extract the shared
+  concept into a lower module both can depend on.
+- Do not hide the cycle with re-exports or indirection; fix the dependency
+  direction from first principles.
+"
+            }
+            Lint::Tangle => {
+                "\
+tangle
+
+Things that know each other in a circle, written in more than one module, or
+more of them than a reader can hold in mind. Where a tangle is written is its
+members' homes and the modules of the references that tie it.
+
+Why it matters:
+- The members cannot be understood one at a time; they form one concept.
+- Spreading that concept across modules makes the interface wider than it looks.
+
+How to fix:
+- Identify the concept the cycle represents and give it one clear owner.
+- Lift coordination into a higher module, or move members so the dependency goes
+  one way.
+- Do not fix by moving impl blocks mechanically if the underlying coupling stays.
+"
+            }
+            Lint::FieldLeak => {
+                "\
+field-leak
+
+Code outside a type works on one of its fields directly or through an accessor
+that exposes it, while the type keeps at least one field to itself and has real
+methods.
+
+Why it matters:
+- The type's representation is no longer hidden; callers depend on its fields.
+- Changes to the field or its invariant ripple through outside modules.
+
+How to fix:
+- Look at all leaked fields and call sites together, not one at a time.
+- Give the type operations that express intent, and keep the representation
+  private behind that narrow interface.
+- A getter that returns a copy of plain data is not a leak; exposing mutable or
+  structural access is.
+"
+            }
+            Lint::ShallowModule => {
+                "\
+shallow-module
+
+A crate, or a module with child modules, that shows more functions than a
+reader holds in mind, hides no more than it shows, and has at least one long
+list of things or functions.
+
+Why it matters:
+- The interface cost is as large as the implementation it hides.
+- Readers must learn many entry points instead of a few deep operations.
+
+How to fix:
+- Group functions by the concept they serve and expose fewer, deeper operations.
+- Hide helper functions behind the operations callers actually need.
+- Split by responsibility only when each resulting module has a narrow interface.
+"
+            }
+            Lint::WideDirectory => {
+                "\
+wide-directory
+
+A directory holds more files and directories than a reader takes in at a
+glance.
+
+Why it matters:
+- A listing becomes something to search, not something to read.
+- The directory is likely mixing concerns that want their own subdirectories.
+
+How to fix:
+- Group files by the concept or layer they belong to.
+- Create subdirectories with clear names and move related files together.
+- Keep the directory's public shape easy to scan.
+"
+            }
+            Lint::LongFile => {
+                "\
+long-file
+
+A file has more lines than a reader can comfortably scroll through and hold in
+mind.
+
+Why it matters:
+- Large files often contain multiple concepts or layers.
+- Navigation and review cost grow as unrelated code accumulates.
+
+How to fix:
+- Split by responsibility, not by arbitrary line counts.
+- Move cohesive types/functions into modules with clear interfaces.
+- Keep tests and implementation organized so each file has one main reason to
+  change.
+"
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -120,6 +238,18 @@ pub struct Step {
     pub uses: String,
 }
 
+/// Interface depth for one judged module, reported by `--audit`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuditRow {
+    pub module: String,
+    pub shown: usize,
+    pub hidden: usize,
+    pub total: usize,
+    /// The longest list a reader learns by: `(name, length)`.
+    pub longest_list: Option<(String, usize)>,
+    pub lints: Vec<Lint>,
+}
+
 /// Every lint over `model`, optionally only where `scope`, a crate or module, is concerned.
 pub fn check(model: &Model, scope: Option<NodeId>) -> Vec<Diagnostic> {
     let graph = Graph::new(model);
@@ -130,6 +260,33 @@ pub fn check(model: &Model, scope: Option<NodeId>) -> Vec<Diagnostic> {
     diagnostics.extend(layout::check(model, scope));
     diagnostics.sort_by(|a, b| a.lint.cmp(&b.lint).then_with(|| a.key.cmp(&b.key)));
     diagnostics
+}
+
+/// Interface-depth audit for judged modules, with fired lints attached.
+pub fn audit(model: &Model, scope: Option<NodeId>) -> Vec<AuditRow> {
+    let graph = Graph::new(model);
+    let diagnostics = check(model, scope);
+    let mut rows = shallow::audit(model, &graph, scope);
+    for row in &mut rows {
+        let mut lints: BTreeSet<Lint> = BTreeSet::new();
+        for diagnostic in &diagnostics {
+            if diagnostic_concerns_module(&diagnostic.key, &row.module) {
+                lints.insert(diagnostic.lint);
+            }
+        }
+        row.lints = lints.into_iter().collect();
+    }
+    rows
+}
+
+fn diagnostic_concerns_module(key: &str, module: &str) -> bool {
+    if key == module || key.starts_with(&format!("{module}::")) {
+        return true;
+    }
+    key.split(',').any(|member| {
+        let member = member.trim();
+        member == module || member.starts_with(&format!("{module}::"))
+    })
 }
 
 pub fn resolve_node(model: &Model, query: &str) -> Option<NodeId> {
