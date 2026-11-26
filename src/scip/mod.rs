@@ -73,6 +73,10 @@ const OCCURRENCE_RANGE: u32 = 1;
 const OCCURRENCE_SYMBOL: u32 = 2;
 const OCCURRENCE_SYMBOL_ROLES: u32 = 3;
 const OCCURRENCE_ENCLOSING_RANGE: u32 = 7;
+const OCCURRENCE_SINGLE_LINE_RANGE: u32 = 8;
+const OCCURRENCE_MULTI_LINE_RANGE: u32 = 9;
+const OCCURRENCE_SINGLE_LINE_ENCLOSING_RANGE: u32 = 10;
+const OCCURRENCE_MULTI_LINE_ENCLOSING_RANGE: u32 = 11;
 const ROLE_DEFINITION: u64 = 1;
 
 pub fn read(bytes: &[u8]) -> Result<Index<'_>, Malformed> {
@@ -144,6 +148,8 @@ fn symbol_information(bytes: &[u8]) -> Result<SymbolInformation<'_>, Malformed> 
 fn occurrence(bytes: &[u8]) -> Result<Occurrence<'_>, Malformed> {
     let mut range = Vec::new();
     let mut enclosing = Vec::new();
+    let mut typed_range = None;
+    let mut typed_enclosing = None;
     let mut symbol = "";
     let mut roles = 0;
     for field in Fields::new(bytes) {
@@ -152,15 +158,41 @@ fn occurrence(bytes: &[u8]) -> Result<Occurrence<'_>, Malformed> {
             (OCCURRENCE_SYMBOL, value) => symbol = protobuf::string(value)?,
             (OCCURRENCE_SYMBOL_ROLES, Value::Varint(value)) => roles = value,
             (OCCURRENCE_ENCLOSING_RANGE, value) => protobuf::integers(value, &mut enclosing)?,
+            (OCCURRENCE_SINGLE_LINE_RANGE, value) => {
+                typed_range = Some(typed_range_from(protobuf::bytes(value)?, false)?);
+            }
+            (OCCURRENCE_MULTI_LINE_RANGE, value) => {
+                typed_range = Some(typed_range_from(protobuf::bytes(value)?, true)?);
+            }
+            (OCCURRENCE_SINGLE_LINE_ENCLOSING_RANGE, value) => {
+                typed_enclosing = Some(typed_range_from(protobuf::bytes(value)?, false)?);
+            }
+            (OCCURRENCE_MULTI_LINE_ENCLOSING_RANGE, value) => {
+                typed_enclosing = Some(typed_range_from(protobuf::bytes(value)?, true)?);
+            }
             _ => {}
         }
     }
     Ok(Occurrence {
-        range: to_range(&range).ok_or(Malformed("an occurrence's range"))?,
+        range: typed_range
+            .or_else(|| to_range(&range))
+            .ok_or(Malformed("an occurrence's range"))?,
         symbol,
         definition: roles & ROLE_DEFINITION != 0,
-        enclosing: to_range(&enclosing),
+        enclosing: typed_enclosing.or_else(|| to_range(&enclosing)),
     })
+}
+
+/// Proto3 omits fields whose value is zero; typed ranges must default them.
+fn typed_range_from(bytes: &[u8], multiline: bool) -> Result<Range, Malformed> {
+    let mut parts = [0_u64; 4];
+    for field in Fields::new(bytes) {
+        if let (number @ 1..=4, Value::Varint(value)) = field? {
+            parts[number as usize - 1] = value;
+        }
+    }
+    let numbers = if multiline { &parts[..4] } else { &parts[..3] };
+    to_range(numbers).ok_or(Malformed("a typed occurrence range"))
 }
 
 /// SCIP writes `[line, start, end]` for a range on one line, `[start line, start, end line, end]` otherwise.
@@ -186,6 +218,18 @@ fn to_range(numbers: &[u64]) -> Option<Range> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_ranges_override_legacy_and_default_zero_fields() {
+        // Legacy range [7, 1, 2], then a single-line typed range [0, 0, 4]
+        // and a multiline enclosing range [0, 0, 2, 3].
+        let bytes = [
+            0x0a, 3, 7, 1, 2, 0x42, 2, 0x18, 4, 0x5a, 4, 0x18, 2, 0x20, 3,
+        ];
+        let occurrence = occurrence(&bytes).unwrap();
+        assert_eq!(occurrence.range, to_range(&[0, 0, 4]).unwrap());
+        assert_eq!(occurrence.enclosing, to_range(&[0, 0, 2, 3]));
+    }
 
     #[test]
     fn a_path_has_slashes_whichever_separator_its_platform_writes() {

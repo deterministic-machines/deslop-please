@@ -12,6 +12,23 @@ An opinionated linter to remove sloppy code. It follows [*A Philosophy of Softwa
 cargo install deslop-please
 ```
 
+For Go workspaces, install Go and
+[`scip-go`](https://github.com/scip-code/scip-go) and put both on `PATH`:
+
+```bash
+go install github.com/scip-code/scip-go/cmd/scip-go@v0.2.10
+```
+
+Run `deslop-please` from a Go module or workspace. It indexes the active Go
+build configuration and uses the existing graph and lint engine. Go build
+settings such as `GOOS`, `GOARCH`, and `GOFLAGS` are selected through the Go
+toolchain; Cargo-specific flags apply only to Rust.
+
+The Go frontend currently rejects interface method dispatch, type aliases, and
+field accesses whose aliasing it cannot determine. Workspace modules must be
+inside the `go.work` directory. Other unsupported Go constructs may also
+prevent analysis or lead to incomplete results.
+
 ```bash
 > deslop-please
 

@@ -1,9 +1,10 @@
-//! Architectural linter for Rust workspaces: enforces deep modules and narrow
-//! interfaces, working like `cargo check` / `cargo clippy`.
+//! Architectural linter for Rust and Go workspaces: enforces deep modules and
+//! narrow interfaces.
 
 mod allow;
 mod configuration;
 mod format;
+mod go_frontend;
 mod graph;
 mod indexing;
 mod lint;
@@ -60,10 +61,10 @@ usage: {TOOL} [crate_or_mod] [--allow <path>] [--update-allow <path>]
        [--no-default-features] [--json | --sarif]
 
 Runs architectural lints (module-cycle, tangle, field-leak, shallow-module,
-wide-directory, long-file) on the Cargo workspace.
+wide-directory, long-file) on the Cargo or Go workspace.
 
 options:
-  <crate_or_mod>               check only one crate or module (e.g. my-crate)
+  <crate_or_mod>               check only one package or module (e.g. my-crate)
   --allow <path>               suppress listed existing debt; new errors still fail
   --update-allow <path>        write current diagnostics to <path>
   --json                       write diagnostics as JSON to stdout
@@ -236,8 +237,48 @@ fn main() -> ExitCode {
 }
 
 fn run(options: Options) -> Result<bool, Error> {
-    let workspace = Workspace::discover()?;
-    let model = load_model(&workspace, &options.configuration)?;
+    let cwd = std::env::current_dir()
+        .map_err(|e| Error::new(format!("cannot read current directory: {e}")))?;
+    let manifest = cwd.ancestors().find(|dir| {
+        dir.join("go.mod").is_file()
+            || dir.join("go.work").is_file()
+            || dir.join("Cargo.toml").is_file()
+    });
+    let model = if let Some(root) =
+        manifest.filter(|dir| dir.join("go.mod").is_file() || dir.join("go.work").is_file())
+    {
+        if !options.configuration.is_default() {
+            return Err(Error::new(
+                "Cargo configuration flags cannot be used for Go workspaces",
+            ));
+        }
+        // Go may select a go.work above a nested go.mod, or via GOWORK.
+        let output = std::process::Command::new("go")
+            .args(["env", "GOWORK"])
+            .current_dir(&cwd)
+            .output()
+            .map_err(|e| Error::new(format!("cannot run go env: {e}")))?;
+        if !output.status.success() {
+            return Err(Error::new(format!(
+                "go env GOWORK failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        let work = String::from_utf8(output.stdout)
+            .map_err(|e| Error::new(format!("go env GOWORK is not UTF-8: {e}")))?;
+        let work = work.trim();
+        let root = if work.is_empty() || work == "off" {
+            root
+        } else {
+            std::path::Path::new(work)
+                .parent()
+                .ok_or_else(|| Error::new(format!("invalid go.work path: {work}")))?
+        };
+        go_frontend::build(root)?
+    } else {
+        let workspace = Workspace::discover()?;
+        load_model(&workspace, &options.configuration)?
+    };
     let scope = match &options.scope {
         Some(query) => Some(
             lint::resolve_node(&model, query)

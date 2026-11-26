@@ -1,8 +1,9 @@
 # Proposal: Go frontend using SCIP
 
-This is a design proposal, not an implementation of Go support. Its goal is to
-apply deslop-please's architectural checks to Go code while reusing the existing
-lint engine where its assumptions hold.
+The Go frontend now indexes Go modules with scip-go and feeds a Go-specific
+model to the existing lint engine. It remains experimental: see the README for
+known limitations. The notes below describe the original design and open
+questions, not a guarantee that every case is supported.
 
 ## Approach
 
