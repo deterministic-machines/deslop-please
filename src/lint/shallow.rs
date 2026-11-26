@@ -7,9 +7,9 @@
 //! that use it; one that uses none of the module's types is a thing of its
 //! own. It counts its working functions: those that are not wrappers and not
 //! of a trait's `impl` block, each at its thing's home, so a method at its
-//! type's. It shows those that code outside it uses, through wrappers; code is
-//! outside by its function's home, or by its module where no function holds
-//! it. It shows a thing when it shows one of its functions.
+//! type's. It shows those that code outside it uses by name, through
+//! wrappers; code is outside by its function's home, or by its module where
+//! no function holds it. It shows a thing when it shows one of its functions.
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -50,7 +50,7 @@ pub fn check(model: &Model, graph: &Graph, scope: Option<NodeId>) -> Vec<Diagnos
         }
     }
     let mut shown: HashMap<NodeId, BTreeSet<ItemId>> = HashMap::new();
-    for usage in &graph.uses {
+    for usage in graph.uses.iter().filter(|usage| !usage.dispatched) {
         let Some(at) = home(usage.item).filter(|_| working(usage.item)) else {
             continue;
         };
@@ -105,7 +105,7 @@ pub fn check(model: &Model, graph: &Graph, scope: Option<NodeId>) -> Vec<Diagnos
 fn types_known(model: &Model, graph: &Graph) -> HashMap<ThingId, BTreeSet<ThingId>> {
     let kind = |thing: ThingId| model.items[graph.things[thing.index()].item.index()].kind;
     let mut known: HashMap<ThingId, BTreeSet<ThingId>> = HashMap::new();
-    for usage in &graph.uses {
+    for usage in graph.uses.iter().filter(|usage| !usage.dispatched) {
         if let (Some(user), Some(used)) = (usage.user, graph.thing_of[usage.item.index()])
             && kind(user) == ItemKind::Function
             && kind(used) == ItemKind::Type

@@ -14,7 +14,7 @@ pub fn check(model: &Model, scope: Option<NodeId>) -> Vec<Diagnostic> {
     let tree = &model.tree;
     // By parent, the ties between its children.
     let mut ties: BTreeMap<NodeId, BTreeMap<(NodeId, NodeId), Tie>> = BTreeMap::new();
-    for reference in model.references.iter().filter(|r| !r.test) {
+    for reference in model.references.iter().filter(|r| !r.test && !r.dispatched) {
         let item = &model.items[reference.item.index()];
         let test = tree.is_test(item.owner)
             || item.file.is_some_and(|file| model.files[file.index()].test);

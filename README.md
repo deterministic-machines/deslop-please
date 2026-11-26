@@ -19,15 +19,21 @@ For Go workspaces, install Go and
 go install github.com/scip-code/scip-go/cmd/scip-go@v0.2.10
 ```
 
-Run `deslop-please` from a Go module or workspace. It indexes the active Go
-build configuration and uses the existing graph and lint engine. Go build
+Run `deslop-please` from a Go module or workspace (`go.work`, including
+modules outside its directory). It indexes the active Go build configuration,
+type-checks the workspace's packages, and uses the existing graph and lint
+engine; each Go package is a package, named by its import path. Go build
 settings such as `GOOS`, `GOARCH`, and `GOFLAGS` are selected through the Go
 toolchain; Cargo-specific flags apply only to Rust.
 
-The Go frontend currently rejects interface method dispatch, type aliases, and
-field accesses whose aliasing it cannot determine. Workspace modules must be
-inside the `go.work` directory. Other unsupported Go constructs may also
-prevent analysis or lead to incomplete results.
+Go support is experimental. A call of an interface's method counts as a use of
+the methods it may run, by the concrete types the workspace's non-test code
+converts to interfaces or passes as type arguments; it can expose a field
+through a getter, but it makes no tangle. Conversions done by reflection or
+inside dependencies are not seen. Packages that use cgo, and code that does not
+type-check, cannot be analyzed. See
+[the Go frontend notes](docs/go-frontend-proposal.md) for what counts as a
+read and the other limitations.
 
 ```bash
 > deslop-please

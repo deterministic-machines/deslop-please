@@ -31,7 +31,7 @@ pub fn check(model: &Model, graph: &Graph, scope: Option<NodeId>) -> Vec<Diagnos
         })
         .collect();
     let tangle_of = |thing: ThingId| graph.tangle_of[thing.index()];
-    for usage in &graph.uses {
+    for usage in graph.uses.iter().filter(|usage| !usage.dispatched) {
         let Some(user) = usage.user else { continue };
         let Some(used) = graph.thing_of[usage.item.index()] else {
             continue;

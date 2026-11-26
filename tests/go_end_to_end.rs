@@ -222,21 +222,100 @@ fn go_value_getter_does_not_expose_the_field() {
     assert_eq!(output["diagnostics"], serde_json::json!([]));
 }
 
+/// Asserts `output` reports `key` leaking at `file`:`line`, and returns the
+/// diagnostic.
+fn leak<'a>(output: &'a Value, key: &str, file: &str, line: u64) -> &'a Value {
+    let leak = output["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["lint"] == "field-leak" && d["key"] == key)
+        .unwrap_or_else(|| panic!("no field-leak of {key}: {output}"));
+    assert_eq!(leak["file"], file, "{leak}");
+    assert_eq!(leak["line"], line, "{leak}");
+    leak
+}
+
 #[test]
-fn go_interface_method_dispatch_reports_unsupported_instead_of_omitting_edges() {
-    let root = workspace("go_interface_dispatch");
-    let output = Command::new(env!("CARGO_BIN_EXE_deslop-please"))
-        .arg("--json")
-        .current_dir(root)
-        .env_remove("GOWORK")
-        .env("GOFLAGS", "")
-        .output()
-        .unwrap();
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert_eq!(output.status.code(), Some(2), "{stderr}");
-    assert!(
-        stderr.contains("interface method dispatch cannot be represented"),
-        "{stderr}"
+fn go_interface_dispatch_to_a_lending_getter_exposes_the_field() {
+    let output = lint(&workspace("go_interface_dispatch"), 1);
+    let leak = leak(
+        &output,
+        "example.com/interfacedispatch/queue::Queue::items",
+        "consumer/consumer.go",
+        10,
     );
-    assert!(stderr.contains("consumer.go:10:"), "{stderr}");
+    assert!(
+        leak["notes"][0]
+            .as_str()
+            .unwrap()
+            .ends_with("through `Queue::Items` by interface dispatch"),
+        "{leak}"
+    );
+}
+
+#[test]
+fn go_interface_dispatch_is_no_knowledge_so_inverted_dependencies_make_no_tangle() {
+    // Store calls Audit only through its own Logger interface.
+    let output = lint(&workspace("go_dispatch_inversion"), 0);
+    assert_eq!(output["diagnostics"], serde_json::json!([]));
+}
+
+#[test]
+fn go_methods_declared_on_type_aliases_belong_to_the_aliased_type() {
+    let output = lint(&workspace("go_alias"), 1);
+    leak(
+        &output,
+        "example.com/alias/queue::Queue::items",
+        "consumer/consumer.go",
+        8,
+    );
+    assert_eq!(output["diagnostics"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn go_writing_a_promoted_field_reaches_into_the_embedded_field() {
+    let output = lint(&workspace("go_embedded"), 1);
+    leak(
+        &output,
+        "example.com/embedded/queue::Queue::Counter",
+        "consumer/consumer.go",
+        6,
+    );
+}
+
+#[test]
+fn go_reading_plain_values_out_of_exported_fields_is_no_leak() {
+    let output = lint(&workspace("go_reads"), 0);
+    assert_eq!(output["diagnostics"], serde_json::json!([]));
+}
+
+#[test]
+fn go_workspace_modules_outside_the_go_work_directory_are_analyzed() {
+    let root = workspace("go_workspace_outside");
+    let output = lint(&root.join("work"), 1);
+    leak(
+        &output,
+        "example.com/shared/queue::Queue::Items",
+        "app/app.go",
+        6,
+    );
+}
+
+#[test]
+fn go_analyzer_unit_tests_pass() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/go_frontend");
+    let output = Command::new("go")
+        .args(["test", "facts.go", "facts_test.go"])
+        .current_dir(dir)
+        .env("GO111MODULE", "off")
+        .env_remove("GOFLAGS")
+        .output()
+        .expect("these tests run Go, which is not on PATH");
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

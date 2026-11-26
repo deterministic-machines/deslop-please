@@ -6,44 +6,40 @@ use std::process::Command;
 use crate::Error;
 
 pub struct ModuleIndex {
+    /// The module's directory, canonical.
     pub root: PathBuf,
+    /// Its module path, the prefix of its packages' import paths.
+    pub path: String,
     pub bytes: Vec<u8>,
 }
 
 fn failure(program: &str, root: &Path, output: &std::process::Output) -> Error {
     let detail = String::from_utf8_lossy(&output.stderr);
     Error::new(format!(
-        "{program} failed in {} ({}): {}",
+        "{program} failed in {}: {}",
         root.display(),
-        output.status,
         detail.trim()
     ))
 }
 
-/// Index each main module separately: scip-go expects its root to contain go.mod.
-pub fn index(root: &Path) -> Result<Vec<ModuleIndex>, Error> {
-    let root = root
-        .canonicalize()
-        .map_err(|e| Error::new(format!("{}: {e}", root.display())))?;
-    let workspace = root.join("go.work").is_file();
-    if !workspace && !root.join("go.mod").is_file() {
-        return Err(Error::new(format!(
-            "{} has neither go.work nor go.mod",
-            root.display()
-        )));
-    }
+/// The value of `GOWORK` for the go commands: the workspace file, or `off`.
+pub fn gowork(work: Option<&Path>) -> std::ffi::OsString {
+    work.map_or_else(|| "off".into(), |work| work.as_os_str().to_owned())
+}
+
+/// Index each main module separately: scip-go expects its root to contain
+/// go.mod. A workspace's modules may be anywhere, inside its directory or
+/// not.
+pub fn index(root: &Path, work: Option<&Path>) -> Result<Vec<ModuleIndex>, Error> {
     let mut go = Command::new("go");
-    go.current_dir(&root).args(["list", "-m", "-json"]);
-    if workspace {
-        go.env("GOWORK", root.join("go.work"));
-    } else {
-        go.env("GOWORK", "off");
-    }
+    go.current_dir(root)
+        .args(["list", "-m", "-json"])
+        .env("GOWORK", gowork(work));
     let output = go
         .output()
         .map_err(|e| Error::new(format!("cannot run go list: {e}")))?;
     if !output.status.success() {
-        return Err(failure("go list -m", &root, &output));
+        return Err(failure("go list -m", root, &output));
     }
     let mut modules = Vec::new();
     for value in
@@ -53,21 +49,17 @@ pub fn index(root: &Path) -> Result<Vec<ModuleIndex>, Error> {
         if value.get("Main").and_then(|v| v.as_bool()) != Some(true) {
             continue;
         }
-        let dir = value
-            .get("Dir")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| Error::new("go list -m omitted the main module directory"))?;
+        let text = |key: &str| {
+            value
+                .get(key)
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| Error::new(format!("go list -m omitted a main module's {key}")))
+        };
+        let dir = text("Dir")?;
         let dir = PathBuf::from(dir)
             .canonicalize()
             .map_err(|e| Error::new(format!("{dir}: {e}")))?;
-        if !dir.starts_with(&root) {
-            return Err(Error::new(format!(
-                "Go workspace module {} is outside workspace root {}; this layout cannot be represented",
-                dir.display(),
-                root.display()
-            )));
-        }
-        modules.push(dir);
+        modules.push((dir, text("Path")?.to_owned()));
     }
     modules.sort();
     modules.dedup();
@@ -78,19 +70,15 @@ pub fn index(root: &Path) -> Result<Vec<ModuleIndex>, Error> {
         )));
     }
     let mut indexes = Vec::with_capacity(modules.len());
-    for module in modules {
+    for (module, path) in modules {
         let mut command = Command::new("scip-go");
         command
             .current_dir(&module)
             .arg("index")
             .arg("--module-root")
             .arg(&module)
-            .args(["--module-version", ".", "--output", "-", "--quiet"]);
-        if workspace {
-            command.env("GOWORK", root.join("go.work"));
-        } else {
-            command.env("GOWORK", "off");
-        }
+            .args(["--module-version", ".", "--output", "-", "--quiet"])
+            .env("GOWORK", gowork(work));
         let output = command.output().map_err(|e| {
             Error::new(format!(
                 "cannot run scip-go (install it and add it to PATH): {e}"
@@ -107,6 +95,7 @@ pub fn index(root: &Path) -> Result<Vec<ModuleIndex>, Error> {
         }
         indexes.push(ModuleIndex {
             root: module,
+            path,
             bytes: output.stdout,
         });
     }

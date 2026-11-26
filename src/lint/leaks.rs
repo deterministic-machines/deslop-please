@@ -3,8 +3,9 @@
 //! has a method of its own with a `self` parameter, not a wrapper, that uses
 //! them. A marker field, a `PhantomData`, holds nothing to keep and plays no
 //! part. Then each of its fields that an outsider writes, borrows, indexes or
-//! calls a method on, directly or through a getter or setter, is known
-//! outside it. Reading a value is no leak, with or without a getter: a copy
+//! calls a method on, directly or through a getter or setter, or through an
+//! interface method that may dispatch to one, is known outside it. Reading a
+//! value is no leak, with or without a getter: a copy
 //! of a field, or a borrow of plain data. Whoever reads a value depends on
 //! what it is, not on how the struct keeps it. Neither is calling a method
 //! that passes the call on to a field, whose callers never see the field.
@@ -154,7 +155,12 @@ fn diagnostic(
         };
         let through = usage.through.map_or(String::new(), |wrapper| {
             let name = without_generics(&model.items[wrapper.index()].name);
-            format!(", through `{name}`")
+            let dispatch = if usage.dispatched {
+                " by interface dispatch"
+            } else {
+                ""
+            };
+            format!(", through `{name}`{dispatch}")
         });
         let at = Location {
             file: model.files[reference.file.index()].path.clone(),

@@ -295,6 +295,7 @@ impl<'a> Builder<'a> {
             item,
             copies: false,
             test: false,
+            dispatched: false,
         });
         let access = if self.functions.contains(&item) {
             unit.source.call_access(occurrence.range)

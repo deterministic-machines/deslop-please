@@ -94,6 +94,9 @@ pub struct Reference {
     /// directly or through forwarders: the code reads so what it lends.
     pub copies: bool,
     pub test: bool,
+    /// A method a call of an interface's method may run, by what the
+    /// interface's values can be: a dynamic use the code does not name.
+    pub dispatched: bool,
 }
 
 /// A function that adds nothing of its own.
@@ -230,6 +233,7 @@ pub mod tests {
                 item,
                 copies: false,
                 test: false,
+                dispatched: false,
             });
         }
 

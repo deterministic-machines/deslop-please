@@ -239,42 +239,13 @@ fn main() -> ExitCode {
 fn run(options: Options) -> Result<bool, Error> {
     let cwd = std::env::current_dir()
         .map_err(|e| Error::new(format!("cannot read current directory: {e}")))?;
-    let manifest = cwd.ancestors().find(|dir| {
-        dir.join("go.mod").is_file()
-            || dir.join("go.work").is_file()
-            || dir.join("Cargo.toml").is_file()
-    });
-    let model = if let Some(root) =
-        manifest.filter(|dir| dir.join("go.mod").is_file() || dir.join("go.work").is_file())
-    {
+    let model = if let Some(go) = go_frontend::discover(&cwd)? {
         if !options.configuration.is_default() {
             return Err(Error::new(
                 "Cargo configuration flags cannot be used for Go workspaces",
             ));
         }
-        // Go may select a go.work above a nested go.mod, or via GOWORK.
-        let output = std::process::Command::new("go")
-            .args(["env", "GOWORK"])
-            .current_dir(&cwd)
-            .output()
-            .map_err(|e| Error::new(format!("cannot run go env: {e}")))?;
-        if !output.status.success() {
-            return Err(Error::new(format!(
-                "go env GOWORK failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
-        }
-        let work = String::from_utf8(output.stdout)
-            .map_err(|e| Error::new(format!("go env GOWORK is not UTF-8: {e}")))?;
-        let work = work.trim();
-        let root = if work.is_empty() || work == "off" {
-            root
-        } else {
-            std::path::Path::new(work)
-                .parent()
-                .ok_or_else(|| Error::new(format!("invalid go.work path: {work}")))?
-        };
-        go_frontend::build(root)?
+        go_frontend::build(&go)?
     } else {
         let workspace = Workspace::discover()?;
         load_model(&workspace, &options.configuration)?

@@ -6,8 +6,9 @@
 //! chain and a read of the fields of `self` the chain calls on, a use of an
 //! accessor is a use of its fields, and what a wrapper's own item names is no
 //! one's use. A
-//! thing knows another if its code uses one of the other's items; things that
-//! know each other in a circle are a tangle.
+//! thing knows another if its code uses one of the other's items, by name: a
+//! method an interface's method may dispatch to is used, but not known.
+//! Things that know each other in a circle are a tangle.
 
 mod components;
 
@@ -56,6 +57,8 @@ pub struct Use {
     /// For a field: the user only reads its value, directly or through
     /// wrappers that hand out nothing else.
     pub copies: bool,
+    /// Its reference is a dispatch from an interface's method.
+    pub dispatched: bool,
 }
 
 impl Graph {
@@ -66,6 +69,7 @@ impl Graph {
         for usage in &uses {
             if let (Some(user), Some(used)) = (usage.user, thing_of[usage.item.index()])
                 && user != used
+                && !usage.dispatched
             {
                 knows[user.index()].push(used.index());
             }
@@ -147,6 +151,7 @@ fn uses(model: &Model, thing_of: &[Option<ThingId>]) -> Vec<Use> {
                     item,
                     through,
                     copies,
+                    dispatched: reference.dispatched,
                 });
             }
         }

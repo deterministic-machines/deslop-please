@@ -1,9 +1,69 @@
 # Proposal: Go frontend using SCIP
 
-The Go frontend now indexes Go modules with scip-go and feeds a Go-specific
-model to the existing lint engine. It remains experimental: see the README for
-known limitations. The notes below describe the original design and open
-questions, not a guarantee that every case is supported.
+The Go frontend indexes Go modules with scip-go, type-checks their packages
+from source, and feeds a Go model to the existing lint engine. It remains
+experimental. The section below describes what is implemented; the rest of
+this document is the original design and its open questions.
+
+## As implemented
+
+**Workspace.** The go command chooses it: the module above the current
+directory, or the `go.work` it selects (also through `GOWORK`). Each main
+module is indexed by scip-go on its own, wherever it is; paths are relative to
+the workspace's directory, through `..` for a module outside it. Build tags,
+`GOOS`, `GOARCH` and `GOFLAGS` select the files for both the index and the type
+checker. Test files are analyzed and marked as test code.
+
+**Model.** Each Go package is a package, named by its import path; an external
+test package is `path_test`. Types (aliases included), functions, methods,
+struct fields (also of nested anonymous structs), interface methods, and
+package-level constants and variables are items. A method belongs to the type
+it is declared on, through an alias. Types declared inside functions are not
+items. scip-go gives the references by name; the analyzer (`facts.go`) adds
+what the code does with each use, the accessors and forwarders, and the
+references the source does not spell out.
+
+**Reads.** A use of a field, or of what a getter returns, only reads when it
+cannot write the storage or keep a way to it: arithmetic, comparisons,
+`len`/`cap`, indexing or ranging that yields plain data, a value-receiver
+method on plain data, or handing on a copy of plain data (no pointer, slice,
+map, channel, function, interface or type parameter inside). Everything else
+is a write: assignment, `++`, `&`, append, copy into, delete, clear, close,
+channel operations, calling a function-valued field, a pointer-receiver
+method, or handing on a value that shares storage. A struct literal gives
+each field its value whole, as a Rust struct literal does, so it only reads.
+Interface values count as sharing storage.
+
+**Accessors and forwarders.** A method whose body only returns fields of its
+receiver (or their addresses) is a getter; one that only assigns parameters to
+them is a setter; a function whose body only calls another workspace function
+with all its parameters, possibly on a field of the receiver, is a forwarder.
+A forwarder to an interface method is not one: the call may run anything.
+
+**Implicit references.** A promoted field's use is also a use of the embedded
+fields it is reached through. A struct literal without keys names each field.
+A call of an interface's method, directly, through an embedded interface, or
+on a type parameter, is also a *dispatched* use of each workspace method it
+may run: the methods of the concrete types that implement the interface among
+those the workspace's non-test code converts to an interface (assignment,
+argument, result, literal element, send, map key, explicit conversion) or
+passes as a type argument. Dispatched uses count for `field-leak`, so a getter
+reached through an interface still exposes its field, but not for `tangle`,
+`module-cycle` or `shallow-module`: calling through an interface is not
+knowing the implementation.
+
+**Limitations.**
+
+- Dynamic types made by reflection or by conversions inside dependencies are
+  not seen; a function value is not followed to the function it holds.
+- A call of a promoted method is not a use of the embedded field it goes
+  through: embedding publishes the embedded type's methods.
+- Methods that implement interfaces are counted like any other by
+  `shallow-module`; Go has no `impl` blocks to tell them apart.
+- Packages that use cgo cannot be analyzed: scip-go indexes cgo's generated
+  files instead of the sources. Code that does not type-check is rejected.
+- Generated files are analyzed like any other.
+- Only the workspace's main modules are analyzed, not their dependencies.
 
 ## Approach
 
