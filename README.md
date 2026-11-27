@@ -12,6 +12,8 @@ An opinionated linter to remove sloppy code. It follows [*A Philosophy of Softwa
 cargo install deslop-please
 ```
 
+For Python, TypeScript and JavaScript, see the [port](https://github.com/Bor4brn/deslop-please).
+
 Requires `rust-analyzer` (e.g., `rustup component add rust-analyzer`).
 
 ```bash
