@@ -12,6 +12,8 @@ An opinionated linter to remove sloppy code. It follows [*A Philosophy of Softwa
 cargo install deslop-please
 ```
 
+Requires `rust-analyzer` (e.g., `rustup component add rust-analyzer`).
+
 ```bash
 > deslop-please
 
