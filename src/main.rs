@@ -49,6 +49,8 @@ struct Options {
     allow: Option<PathBuf>,
     update_allow: Option<PathBuf>,
     format: OutputFormat,
+    audit: bool,
+    explain: Option<String>,
     configuration: Configuration,
 }
 
@@ -57,7 +59,8 @@ fn usage() -> String {
         "\
 usage: {TOOL} [crate_or_mod] [--allow <path>] [--update-allow <path>]
        [--target <triple>] [-F, --features <features>] [--all-features]
-       [--no-default-features] [--json | --sarif]
+       [--no-default-features] [--json | --sarif] [--audit]
+       {TOOL} --explain <lint>
 
 Runs architectural lints (module-cycle, tangle, field-leak, shallow-module,
 wide-directory, long-file) on the Cargo workspace.
@@ -66,6 +69,8 @@ options:
   <crate_or_mod>               check only one crate or module (e.g. my-crate)
   --allow <path>               suppress listed existing debt; new errors still fail
   --update-allow <path>        write current diagnostics to <path>
+  --audit                      report interface depth for judged modules
+  --explain <lint>             explain a lint and exit
   --json                       write diagnostics as JSON to stdout
   --sarif                      write diagnostics as SARIF 2.1.0 to stdout
   -V, --version                print the version and exit
@@ -90,7 +95,7 @@ A flag's value is the next word, or follows `=`: `--target=<triple>`.
 }
 
 /// The flags, and whether each takes a value. `-F` is `--features`.
-const FLAGS: [(&str, bool); 8] = [
+const FLAGS: [(&str, bool); 10] = [
     ("--allow", true),
     ("--update-allow", true),
     ("--target", true),
@@ -99,6 +104,8 @@ const FLAGS: [(&str, bool); 8] = [
     ("--no-default-features", false),
     ("--json", false),
     ("--sarif", false),
+    ("--audit", false),
+    ("--explain", true),
 ];
 
 /// Reads the command line as cargo reads its own: a flag's value is the next
@@ -111,6 +118,8 @@ fn parse_arguments(arguments: &[String]) -> Result<Options, String> {
         allow: None,
         update_allow: None,
         format: OutputFormat::Text,
+        audit: false,
+        explain: None,
         configuration: Configuration::default(),
     };
     let mut given = Vec::new();
@@ -168,6 +177,13 @@ fn parse_arguments(arguments: &[String]) -> Result<Options, String> {
                 }
                 options.format = OutputFormat::Sarif;
             }
+            "--audit" => options.audit = true,
+            "--explain" => {
+                if value.is_empty() {
+                    return Err("'--explain' needs a lint name".to_owned());
+                }
+                options.explain = Some(value.to_owned());
+            }
             _ => unreachable!("{flag} has no meaning"),
         }
     }
@@ -184,6 +200,12 @@ fn parse_arguments(arguments: &[String]) -> Result<Options, String> {
                 return Err("'--sarif' and '--update-allow' cannot be given together".to_owned());
             }
         }
+    }
+    if options.audit && options.update_allow.is_some() {
+        return Err("'--audit' and '--update-allow' cannot be given together".to_owned());
+    }
+    if options.audit && options.format == OutputFormat::Sarif {
+        return Err("'--audit' and '--sarif' cannot be given together".to_owned());
     }
     Ok(options)
 }
@@ -225,6 +247,17 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if let Some(name) = options.explain {
+        let Some(lint) = lint::Lint::parse(&name) else {
+            eprintln!("{TOOL}: unknown lint '{name}'");
+            eprintln!(
+                "lints: module-cycle, tangle, field-leak, shallow-module, wide-directory, long-file"
+            );
+            return ExitCode::from(2);
+        };
+        print!("{}", lint.explain());
+        return ExitCode::SUCCESS;
+    }
     match run(options) {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
@@ -245,6 +278,16 @@ fn run(options: Options) -> Result<bool, Error> {
         ),
         None => None,
     };
+    if options.audit {
+        let rows = lint::audit(&model, scope);
+        match options.format {
+            OutputFormat::Text => print!("{}", format::render_audit(&rows)),
+            OutputFormat::Json => print!("{}", format::render_audit_json(&rows)),
+            OutputFormat::Sarif => unreachable!("rejected during argument parsing"),
+        }
+        return Ok(true);
+    }
+
     let all = lint::check(&model, scope);
 
     if let Some(path) = options.update_allow {
@@ -304,6 +347,8 @@ mod tests {
         assert_eq!(options.scope.as_deref(), Some("my-crate"));
         assert_eq!((options.allow, options.update_allow), (None, None));
         assert_eq!(options.format, OutputFormat::Text);
+        assert!(!options.audit);
+        assert_eq!(options.explain, None);
         assert!(options.configuration.is_default());
     }
 
@@ -374,6 +419,23 @@ mod tests {
     }
 
     #[test]
+    fn audit_and_explain_flags_are_parsed() {
+        let options = parsed(&["--audit"]).unwrap();
+        assert!(options.audit);
+        assert_eq!(options.format, OutputFormat::Text);
+
+        let options = parsed(&["--audit", "--json"]).unwrap();
+        assert!(options.audit);
+        assert_eq!(options.format, OutputFormat::Json);
+
+        let options = parsed(&["--explain", "field-leak"]).unwrap();
+        assert_eq!(options.explain.as_deref(), Some("field-leak"));
+        assert!(parsed(&["--explain"]).is_err());
+        assert!(parsed(&["--explain="]).is_err());
+        assert!(parsed(&["--audit", "--sarif"]).is_err());
+    }
+
+    #[test]
     fn two_targets_are_an_error_since_rust_analyzer_indexes_one() {
         let two = [
             "--target",
@@ -408,6 +470,9 @@ mod tests {
             &["--update-allow="],
             &["--json", "--update-allow", "a"],
             &["--sarif", "--update-allow", "a"],
+            &["--audit", "--update-allow", "a"],
+            &["--audit", "--sarif"],
+            &["--audit=1"],
             &["--sarif=true"],
             &["--release"],
             &["-p", "my-crate"],

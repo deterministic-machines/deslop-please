@@ -10,7 +10,7 @@ use std::io::IsTerminal;
 use serde_json::{Value, json};
 
 use crate::TOOL;
-use crate::lint::Diagnostic;
+use crate::lint::{AuditRow, Diagnostic};
 
 pub fn render(
     diagnostics: &[Diagnostic],
@@ -123,6 +123,68 @@ fn diagnostic_json(diagnostic: &Diagnostic) -> Value {
 
 pub fn render_sarif(diagnostics: &[Diagnostic]) -> String {
     sarif::render(diagnostics)
+}
+
+pub fn render_audit(rows: &[AuditRow]) -> String {
+    let mut out = String::new();
+    let mut module_width = "MODULE".len();
+    for row in rows {
+        module_width = module_width.max(row.module.len());
+    }
+    let _ = writeln!(
+        out,
+        "{:<module_width$}  {:>5}  {:>6}  {:>5}  {:<24}  LINTS",
+        "MODULE", "SHOWN", "HIDDEN", "TOTAL", "LONGEST LIST"
+    );
+    for row in rows {
+        let longest = row
+            .longest_list
+            .as_ref()
+            .map(|(name, len)| format!("{name} ({len})"))
+            .unwrap_or_else(|| "-".to_owned());
+        let lints = if row.lints.is_empty() {
+            "-".to_owned()
+        } else {
+            row.lints
+                .iter()
+                .map(|lint| lint.name())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let _ = writeln!(
+            out,
+            "{:<module_width$}  {:>5}  {:>6}  {:>5}  {:<24}  {}",
+            row.module, row.shown, row.hidden, row.total, longest, lints
+        );
+    }
+    if rows.is_empty() {
+        let _ = writeln!(out, "{TOOL}: no judged modules");
+    } else {
+        let _ = writeln!(out, "\n{TOOL}: {} modules audited", rows.len());
+    }
+    out
+}
+
+pub fn render_audit_json(rows: &[AuditRow]) -> String {
+    let modules: Vec<Value> = rows
+        .iter()
+        .map(|row| {
+            json!({
+                "module": row.module,
+                "shown": row.shown,
+                "hidden": row.hidden,
+                "total": row.total,
+                "longest_list": row.longest_list.as_ref().map(|(name, len)| json!({"name": name, "length": len})),
+                "lints": row.lints.iter().map(|lint| lint.name()).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    serde_json::to_string_pretty(&json!({
+        "count": rows.len(),
+        "modules": modules,
+    }))
+    .expect("audit serializes to JSON")
+        + "\n"
 }
 
 /// rustc's colors: bold red errors, bold blue gutter, bold green success.

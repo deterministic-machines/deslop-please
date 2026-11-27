@@ -101,6 +101,88 @@ pub fn check(model: &Model, graph: &Graph, scope: Option<NodeId>) -> Vec<Diagnos
     diagnostics
 }
 
+/// Interface-depth audit for every judged module in scope.
+pub fn audit(model: &Model, graph: &Graph, scope: Option<NodeId>) -> Vec<super::AuditRow> {
+    let tree = &model.tree;
+    let judged = judged(tree);
+    let home =
+        |item: ItemId| graph.thing_of[item.index()].map(|thing| graph.things[thing.index()].home);
+    let working = |item: ItemId| {
+        let function = &model.items[item.index()];
+        function.kind == ItemKind::Function
+            && !function.trait_impl
+            && !model.wrappers.contains_key(&item)
+    };
+    let mut total: HashMap<NodeId, usize> = HashMap::new();
+    for index in 0..model.items.len() {
+        let item = ItemId::new(index);
+        if let Some(home) = home(item).filter(|_| working(item)) {
+            for module in modules_around(tree, home).filter(|m| judged.contains(m)) {
+                *total.entry(module).or_default() += 1;
+            }
+        }
+    }
+    let mut shown: HashMap<NodeId, BTreeSet<ItemId>> = HashMap::new();
+    for usage in &graph.uses {
+        let Some(at) = home(usage.item).filter(|_| working(usage.item)) else {
+            continue;
+        };
+        let reference = &model.references[usage.reference];
+        let user = usage
+            .user
+            .map_or(reference.from, |user| graph.things[user.index()].home);
+        for module in modules_around(tree, at) {
+            if within(tree, user, module) {
+                break;
+            }
+            if judged.contains(&module) {
+                shown.entry(module).or_default().insert(usage.item);
+            }
+        }
+    }
+    let known = types_known(model, graph);
+    let mut rows = Vec::new();
+    for module in judged {
+        if !in_scope(tree, scope, module) {
+            continue;
+        }
+        let total_count = total.get(&module).copied().unwrap_or(0);
+        let shown_set = shown.get(&module);
+        let shown_count = shown_set.map_or(0, BTreeSet::len);
+        let hidden = total_count.saturating_sub(shown_count);
+        let longest_list = shown_set.and_then(|shown_set| {
+            let lists = lists(model, graph, &known, module, shown_set);
+            let mut candidates: Vec<(String, usize)> = Vec::new();
+            if lists.len() > HELD_IN_MIND {
+                candidates.push(("things".to_owned(), lists.len()));
+            }
+            for (name, functions) in &lists {
+                if functions.len() > HELD_IN_MIND {
+                    candidates.push((name.clone(), functions.len()));
+                }
+            }
+            candidates
+                .into_iter()
+                .max_by_key(|(_, len)| *len)
+                .or_else(|| {
+                    lists
+                        .first()
+                        .map(|(name, functions)| (name.clone(), functions.len()))
+                })
+        });
+        rows.push(super::AuditRow {
+            module: tree.display(module),
+            shown: shown_count,
+            hidden,
+            total: total_count,
+            longest_list,
+            lints: Vec::new(),
+        });
+    }
+    rows.sort_by(|a, b| a.module.cmp(&b.module));
+    rows
+}
+
 /// The types each free function knows: those whose items its code uses.
 fn types_known(model: &Model, graph: &Graph) -> HashMap<ThingId, BTreeSet<ThingId>> {
     let kind = |thing: ThingId| model.items[graph.things[thing.index()].item.index()].kind;
