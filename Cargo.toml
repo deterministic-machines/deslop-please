@@ -22,5 +22,23 @@ bin-dir = "{ bin }{ binary-ext }"
 # Reads `cargo metadata`'s JSON.
 serde_json = "1.0.154"
 
+# The Tree-sitter backend: manifests, workspace members' globs, a parallel
+# extraction, the Rust grammar and its query API, and the TypeScript
+# frontend's `.gitignore`-respecting walk, `tsconfig` paths, and grammar.
+globset = "0.4"
+ignore = "0.4"
+oxc_resolver = "11"
+rayon = "1.10"
+streaming-iterator = "0.1"
+toml = "0.8"
+tree-sitter = "0.25"
+tree-sitter-go = "0.25"
+tree-sitter-python = "0.25"
+tree-sitter-rust = "0.24"
+tree-sitter-typescript = "0.23"
+
+[dev-dependencies]
+tempfile = "3"
+
 # Its own workspace, also when CI checks it out inside the repository it lints.
 [workspace]

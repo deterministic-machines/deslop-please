@@ -1,7 +1,7 @@
 //! `wide-directory` and `long-file`: how the code is laid out in files. A
 //! reader takes in a directory by listing it and finds their way in a file by
 //! scrolling through it, so each has a most it holds. A directory's members
-//! are its Rust files and its directories that hold Rust files; a file's
+//! are its source files and its directories that hold source files; a file's
 //! lines are all of them, blank and comment lines too; test code counts like
 //! any other. A directory concerns a crate or module when one of its files is
 //! below it.
@@ -111,8 +111,18 @@ fn wide_directory(model: &Model, directory: &str, members: &BTreeSet<&str>) -> D
     })
     .collect();
     // The file that declares its modules: in it, or beside it.
+    const DECLARING: [&str; 8] = [
+        "mod.rs",
+        "lib.rs",
+        "main.rs",
+        "index.ts",
+        "index.tsx",
+        "index.js",
+        "index.jsx",
+        "__init__.py",
+    ];
     let beside = format!("{directory}.rs");
-    let declaring = ["mod.rs", "lib.rs", "main.rs"]
+    let declaring = DECLARING
         .into_iter()
         .filter(|name| members.contains(name))
         .map(|name| format!("{inside}{name}"))
