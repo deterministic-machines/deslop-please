@@ -732,6 +732,13 @@ fn cargo_s_own_configuration_chooses_the_target_and_cfgs_too_and_each_keeps_its_
     };
     let console = "2 modules in `gated::console`";
     let windows = ["--target", "x86_64-pc-windows-msvc"];
+    // Keep this distinct from the native target even on Apple Silicon macOS,
+    // where aarch64-apple-darwin is already Cargo's default target.
+    let configured_target = if cfg!(all(target_arch = "aarch64", target_os = "macos")) {
+        "aarch64-pc-windows-msvc"
+    } else {
+        "aarch64-apple-darwin"
+    };
     let plain = run(&workspace, &[]);
     assert!(plain.stderr.contains("indexing workspace..."));
     assert_eq!(
@@ -752,13 +759,13 @@ fn cargo_s_own_configuration_chooses_the_target_and_cfgs_too_and_each_keeps_its_
             assert!(report.stdout.contains(console), "{variables:?}");
         }
     };
-    build_target("aarch64-apple-darwin");
+    build_target(configured_target);
     indexes_once(&[]);
     std::fs::remove_file(config.join("config.toml")).unwrap();
     indexes_once(&[("RUSTFLAGS", "--cfg rustflags_console")]);
 
     // `--target` overrides `build.target`, as on cargo's command line.
-    build_target("aarch64-apple-darwin");
+    build_target(configured_target);
     let flagged = run(&workspace, &windows);
     assert!(!flagged.stderr.contains("indexing"));
     assert!(flagged.stdout.contains(console));
