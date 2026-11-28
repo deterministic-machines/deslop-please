@@ -17,6 +17,8 @@ use std::collections::HashMap;
 pub enum Language {
     Rust,
     TypeScript,
+    Go,
+    Python,
 }
 
 impl Language {
@@ -26,6 +28,8 @@ impl Language {
         match name.to_ascii_lowercase().as_str() {
             "rust" | "rs" => Some(Language::Rust),
             "typescript" | "ts" | "javascript" | "js" => Some(Language::TypeScript),
+            "go" | "golang" => Some(Language::Go),
+            "python" | "py" => Some(Language::Python),
             _ => None,
         }
     }
@@ -34,15 +38,18 @@ impl Language {
         match self {
             Language::Rust => "rust",
             Language::TypeScript => "typescript",
+            Language::Go => "go",
+            Language::Python => "python",
         }
     }
 
     /// What a module's path puts between its levels: `my_crate::kinds`,
-    /// `app/src/queue`.
+    /// `app/src/queue`, `app.queue`.
     pub fn separator(self) -> &'static str {
         match self {
             Language::Rust => "::",
-            Language::TypeScript => "/",
+            Language::TypeScript | Language::Go => "/",
+            Language::Python => ".",
         }
     }
 
@@ -51,7 +58,7 @@ impl Language {
     pub fn objects_passed_by_ref(self) -> bool {
         match self {
             Language::Rust => false,
-            Language::TypeScript => true,
+            Language::TypeScript | Language::Go | Language::Python => true,
         }
     }
 }

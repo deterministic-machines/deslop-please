@@ -400,7 +400,10 @@ fn module_location(model: &Model, module: NodeId) -> Option<Location> {
             let name = path.rsplit('/').next().unwrap_or(path);
             let entry = path == "src/lib.rs"
                 || path.ends_with("/src/lib.rs")
-                || matches!(name, "index.ts" | "index.tsx" | "index.js" | "index.jsx");
+                || matches!(
+                    name,
+                    "index.ts" | "index.tsx" | "index.js" | "index.jsx" | "__init__.py"
+                );
             let rank = if entry {
                 0
             } else if path.ends_with("/mod.rs") || path.ends_with("src/main.rs") {

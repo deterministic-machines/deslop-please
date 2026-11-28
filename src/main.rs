@@ -78,12 +78,13 @@ fn usage() -> String {
     format!(
         "\
 usage: {TOOL} [crate_or_mod] [--allow <path>] [--update-allow <path>]
-       [--backend <scip|tree-sitter>] [--lang <rust|typescript>]
+       [--backend <scip|tree-sitter>] [--lang <rust|typescript|go|python>]
        [--target <triple>] [-F, --features <features>] [--all-features]
        [--no-default-features] [--json | --sarif]
 
 Runs architectural lints (module-cycle, tangle, field-leak, shallow-module,
-wide-directory, long-file) on the Rust and TypeScript/JavaScript workspace.
+wide-directory, long-file) on the Rust, TypeScript/JavaScript, Go and Python
+workspace.
 
 options:
   <crate_or_mod>               check only one crate, package, or module
@@ -91,9 +92,10 @@ options:
   --update-allow <path>        write current diagnostics to <path>
   --backend <name>             read the workspace with `scip` (rust-analyzer,
                                the default) or `tree-sitter` (no rust-analyzer)
-  --lang <lang>                read only this language: `rust` or `typescript`
-                               (`ts`, `js`, `javascript`); may be given more than
-                               once; the default reads every language found
+  --lang <lang>                read only this language: `rust`, `typescript`
+                               (`ts`, `js`, `javascript`), `go`, or `python`
+                               (`py`); may be given more than once; the default
+                               reads every language found
   --json                       write diagnostics as JSON to stdout
   --sarif                      write diagnostics as SARIF 2.1.0 to stdout
   -V, --version                print the version and exit
@@ -198,7 +200,9 @@ fn parse_arguments(arguments: &[String]) -> Result<Options, String> {
                 }
                 for name in value.split(',').filter(|name| !name.is_empty()) {
                     let language = Language::parse(name).ok_or_else(|| {
-                        format!("'{name}' is not a language: use 'rust' or 'typescript'")
+                        format!(
+                            "'{name}' is not a language: use 'rust', 'typescript', 'go' or 'python'"
+                        )
                     })?;
                     if !options.languages.contains(&language) {
                         options.languages.push(language);
@@ -461,6 +465,25 @@ mod tests {
                 .unwrap()
                 .languages,
             [Language::Rust]
+        );
+        assert_eq!(
+            parsed(&["--lang=golang,py", "--backend", "tree-sitter"])
+                .unwrap()
+                .languages,
+            [Language::Go, Language::Python]
+        );
+        assert_eq!(
+            parsed(&[
+                "--lang",
+                "go",
+                "--lang",
+                "python",
+                "--backend",
+                "tree-sitter"
+            ])
+            .unwrap()
+            .languages,
+            [Language::Go, Language::Python]
         );
     }
 

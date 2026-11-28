@@ -111,7 +111,7 @@ fn wide_directory(model: &Model, directory: &str, members: &BTreeSet<&str>) -> D
     })
     .collect();
     // The file that declares its modules: in it, or beside it.
-    const DECLARING: [&str; 7] = [
+    const DECLARING: [&str; 8] = [
         "mod.rs",
         "lib.rs",
         "main.rs",
@@ -119,6 +119,7 @@ fn wide_directory(model: &Model, directory: &str, members: &BTreeSet<&str>) -> D
         "index.tsx",
         "index.js",
         "index.jsx",
+        "__init__.py",
     ];
     let beside = format!("{directory}.rs");
     let declaring = DECLARING

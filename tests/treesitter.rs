@@ -7,8 +7,9 @@
 //!
 //! `tests/fixtures/typescript` is the TypeScript counterpart of the Rust
 //! families: cycles, a tangle and field leaks across a `tsconfig` path alias
-//! and a barrel re-export. `tests/fixtures/mixed` holds a Cargo crate beside a
-//! TypeScript package, which `--lang` chooses between.
+//! and a barrel re-export. `tests/fixtures/go` and `tests/fixtures/python` do
+//! the same for their grammars, and `tests/fixtures/mixed` holds all four
+//! languages, which `--lang` chooses between.
 //!
 //! `tests/fixtures/build_script` is left out on purpose: its cycle runs through
 //! constants its build script writes to `OUT_DIR`, which only the SCIP backend
@@ -468,8 +469,10 @@ fn a_typescript_workspace_reports_its_cycles_tangles_and_leaks() {
 }
 
 #[test]
-fn a_mixed_workspace_reports_both_languages_and_lang_chooses_one() {
+fn a_mixed_workspace_reports_every_language_and_lang_chooses_one() {
+    let go = "field-leak example.com/mixed/gosvc/Queue::Items";
     let rust = "field-leak core::ring::Ring::items";
+    let python = "module-cycle pysvc.a,pysvc.b";
     let typescript = "module-cycle web/src/a,web/src/b";
     let workspace = workspace("mixed", None, "treesitter-mixed");
     let result = run(&workspace, &[]);
@@ -482,10 +485,22 @@ fn a_mixed_workspace_reports_both_languages_and_lang_chooses_one() {
     assert!(
         result
             .stdout
+            .contains("error[field-leak]: `Queue::Items` is known outside `Queue`")
+    );
+    assert!(
+        result
+            .stdout
             .contains("error[module-cycle]: 2 modules in `web/src` use each other in a circle")
     );
-    assert_eq!(keys(&workspace), [rust, typescript]);
+    assert!(
+        result
+            .stdout
+            .contains("error[module-cycle]: 2 modules in `pysvc` use each other in a circle")
+    );
+    assert_eq!(keys(&workspace), [rust, go, python, typescript]);
     assert_eq!(configured_keys(&workspace, &["--lang", "rust"]), [rust]);
+    assert_eq!(configured_keys(&workspace, &["--lang", "go"]), [go]);
+    assert_eq!(configured_keys(&workspace, &["--lang", "python"]), [python]);
     assert_eq!(configured_keys(&workspace, &["--lang", "ts"]), [typescript]);
     assert_eq!(
         configured_keys(&workspace, &["--lang", "javascript"]),
@@ -494,6 +509,82 @@ fn a_mixed_workspace_reports_both_languages_and_lang_chooses_one() {
     assert_eq!(
         configured_keys(&workspace, &["--lang=rs,ts"]),
         [rust, typescript]
+    );
+    assert_eq!(configured_keys(&workspace, &["--lang=go,py"]), [go, python]);
+}
+
+#[test]
+fn a_go_workspace_reports_a_field_leak_and_a_tangle_and_skips_test_files() {
+    let workspace = workspace("go", None, "treesitter-go");
+    let result = run(&workspace, &[]);
+    assert_eq!(result.code, Some(1));
+    assert!(result.stdout.contains(
+        "error[field-leak]: `Queue::Items` is known outside `Queue`: 1 place in 1 module"
+    ));
+    assert!(result.stdout.contains(
+        "    example.com/demo/queue/Queue\n\
+         \x20     Items ◀━━━ 1  example.com/demo/app\n\
+         \x20     kept: limit\n"
+    ));
+    assert!(result.stdout.contains(
+        "error[tangle]: 8 things know each other in a circle, all in `example.com/demo/ring`"
+    ));
+    // `app_test.go` writes the field too, but test code never counts.
+    assert!(!result.stdout.contains("app_test.go"), "{}", result.stdout);
+    assert_eq!(
+        keys(&workspace),
+        [
+            "field-leak example.com/demo/queue/Queue::Items",
+            "tangle example.com/demo/ring/A,example.com/demo/ring/B,\
+             example.com/demo/ring/C,example.com/demo/ring/D,example.com/demo/ring/E,\
+             example.com/demo/ring/F,example.com/demo/ring/G,example.com/demo/ring/H",
+        ]
+    );
+}
+
+#[test]
+fn a_python_workspace_reports_its_cycle_tangle_property_leak_and_skips_test_files() {
+    let workspace = workspace("python", None, "treesitter-python");
+    let result = run(&workspace, &[]);
+    assert_eq!(result.code, Some(1));
+    assert!(
+        result
+            .stdout
+            .contains("error[module-cycle]: 2 modules in `app` use each other in a circle")
+    );
+    assert!(
+        result
+            .stdout
+            .contains("error[tangle]: 2 things know each other in a circle, across 2 modules")
+    );
+    assert!(result.stdout.contains(
+        "error[field-leak]: `RunQueue::items` is known outside `RunQueue`: 1 place in 1 module"
+    ));
+    // The property getter hands the list out: `app/queue/__init__.py` and
+    // `app/__init__.py` re-export the class the consumer imports it from.
+    assert!(result.stdout.contains(
+        "    app.queue.ring.RunQueue\n\
+         \x20     items ◀━━━ 1  app.consumer\n\
+         \x20     kept: _limit\n"
+    ));
+    assert!(
+        result.stdout.contains("through `contents`"),
+        "{}",
+        result.stdout
+    );
+    // `tests/test_queue.py` writes the field too, but test code never counts.
+    assert!(
+        !result.stdout.contains("test_queue.py"),
+        "{}",
+        result.stdout
+    );
+    assert_eq!(
+        keys(&workspace),
+        [
+            "field-leak app.queue.ring.RunQueue::items",
+            "module-cycle app.a,app.b",
+            "tangle app.a.Alpha,app.b.Beta",
+        ]
     );
 }
 

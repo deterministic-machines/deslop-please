@@ -1,12 +1,12 @@
-//! The Tree-sitter backend: a Cargo or TypeScript workspace is read with
-//! `toml`, `serde_json`, and `tree-sitter` alone, without `cargo metadata`,
-//! `rust-analyzer`, or a TypeScript compiler, and resolved into the same
-//! [`Model`] the SCIP backend builds.
+//! The Tree-sitter backend: a Cargo, TypeScript, Go, or Python workspace is
+//! read with `toml`, `serde_json`, and `tree-sitter` alone, without `cargo
+//! metadata`, `rust-analyzer`, or a language toolchain, and resolved into the
+//! same [`Model`] the SCIP backend builds.
 //!
 //! The pipeline is the SCIP one in miniature: discovery walks the manifests
-//! and `mod` declarations into a module tree, extraction reads every file
-//! into a [`summary::FileSummary`] in parallel, and resolution turns the
-//! summaries into items, references and wrappers.
+//! and package or module declarations into a module tree, extraction reads
+//! every file into a [`summary::FileSummary`] in parallel, and resolution
+//! turns the summaries into items, references and wrappers.
 
 mod lang;
 mod query;
@@ -21,6 +21,8 @@ use crate::Error;
 use crate::configuration::Configuration;
 use crate::model::Model;
 use crate::treesitter::lang::Language;
+use crate::treesitter::lang::go::GoFrontend;
+use crate::treesitter::lang::python::PythonFrontend;
 use crate::treesitter::lang::rust::RustFrontend;
 use crate::treesitter::lang::typescript::TypeScriptFrontend;
 use crate::treesitter::lang::{LanguageFrontend, WorkspaceLayout};
@@ -39,7 +41,9 @@ pub fn build(
     let root = workspace_root(start);
     let rust = RustFrontend;
     let typescript = TypeScriptFrontend::new();
-    let all: [&dyn LanguageFrontend; 2] = [&rust, &typescript];
+    let go = GoFrontend;
+    let python = PythonFrontend;
+    let all: [&dyn LanguageFrontend; 4] = [&rust, &typescript, &go, &python];
     let frontends: Vec<&dyn LanguageFrontend> = all
         .into_iter()
         .filter(|frontend| {
@@ -49,7 +53,7 @@ pub fn build(
         .collect();
     if frontends.is_empty() {
         let asked = if languages.is_empty() {
-            "Rust or TypeScript".to_owned()
+            "Rust, TypeScript, Go or Python".to_owned()
         } else {
             languages
                 .iter()
@@ -93,8 +97,10 @@ fn frontend_of<'a>(
 /// manifest of a language this backend reads.
 ///
 /// A Cargo package is read from the workspace that holds it, the nearest
-/// `Cargo.toml` above it that declares `[workspace]`; a TypeScript package,
-/// from its own directory, since a `tsconfig` and its `paths` are per package.
+/// `Cargo.toml` above it that declares `[workspace]`; every other language is
+/// read from the nearest directory that holds its manifest: a TypeScript
+/// package from its own, since a `tsconfig` and its `paths` are per package,
+/// and a Go or Python workspace from the one that holds its module or project.
 fn workspace_root(start: &Path) -> PathBuf {
     for directory in start.ancestors() {
         if directory.join("Cargo.toml").is_file() {
@@ -108,6 +114,10 @@ fn workspace_root(start: &Path) -> PathBuf {
             "tsconfig.json",
             "jsconfig.json",
             "pnpm-workspace.yaml",
+            "go.work",
+            "go.mod",
+            "pyproject.toml",
+            "setup.py",
         ]
         .iter()
         .any(|manifest| directory.join(manifest).is_file())

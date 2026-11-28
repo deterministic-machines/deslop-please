@@ -1,5 +1,7 @@
 //! Language frontend abstraction and workspace layout discovery types.
 
+pub mod go;
+pub mod python;
 pub mod rust;
 pub mod typescript;
 
@@ -68,7 +70,8 @@ pub enum ResolvedImport {
     },
 }
 
-/// Language frontend trait implemented by the Rust and TypeScript frontends.
+/// Language frontend trait implemented by the Rust, TypeScript, Go and Python
+/// frontends.
 pub trait LanguageFrontend: Sync {
     fn language(&self) -> Language;
 
