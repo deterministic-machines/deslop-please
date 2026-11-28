@@ -66,6 +66,57 @@ impl Configuration {
         *self == Configuration::default()
     }
 
+    /// The target triple `--target` names, if any.
+    pub fn target_triple(&self) -> Option<&str> {
+        self.target.as_deref()
+    }
+
+    /// The target OS `--target` names, or the host's when it names none.
+    pub fn target_os(&self) -> &str {
+        if let Some(triple) = &self.target {
+            if triple.contains("windows") {
+                return "windows";
+            }
+            if triple.contains("darwin") || triple.contains("macos") {
+                return "macos";
+            }
+            if triple.contains("linux") {
+                return "linux";
+            }
+            if triple.contains("freebsd") {
+                return "freebsd";
+            }
+            if triple.contains("wasm") {
+                return "unknown";
+            }
+        }
+        std::env::consts::OS
+    }
+
+    /// The target family `--target` names, or the host's: `unix` or `windows`.
+    pub fn target_family(&self) -> &str {
+        match self.target_os() {
+            "windows" => "windows",
+            "unknown" => "wasm",
+            _ => "unix",
+        }
+    }
+
+    /// The features `--features` names, on top of the default ones.
+    pub fn feature_names(&self) -> &BTreeSet<String> {
+        &self.features
+    }
+
+    /// Whether `--all-features` asks for every feature of every member.
+    pub fn all_features_selected(&self) -> bool {
+        self.all_features
+    }
+
+    /// Whether `--no-default-features` leaves the `default` feature off.
+    pub fn no_default_features_selected(&self) -> bool {
+        self.no_default_features
+    }
+
     /// The settings of rust-analyzer that choose it; the default has none.
     pub fn settings(&self) -> Value {
         let mut cargo = serde_json::Map::new();

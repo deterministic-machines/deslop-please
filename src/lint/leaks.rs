@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use super::{
     Diagnostic, HELD_IN_MIND, Lint, Location, Picture, clickable, counted, in_scope, listed,
-    without_generics,
+    separator, without_generics,
 };
 use crate::graph::{Graph, ThingId, Use};
 use crate::model::{ItemId, ItemKind, Model, NodeId};
@@ -145,8 +145,9 @@ fn diagnostic(
             Some(holder) => {
                 let holder = &model.items[holder.index()];
                 format!(
-                    "{}::{}",
+                    "{}{}{}",
                     tree.display(holder.owner),
+                    separator(tree, holder.owner),
                     without_generics(&holder.name)
                 )
             }
@@ -188,9 +189,11 @@ fn diagnostic(
         let count = more.iter().map(|(places, _)| places).sum();
         modules.push((count, format!("in {}", counted(more.len(), "more module"))));
     }
+    let separator = separator(tree, owner.home);
+    let home = tree.display(owner.home);
     Diagnostic {
         lint: Lint::FieldLeak,
-        key: format!("{}::{field_name}", tree.display(owner.home)),
+        key: format!("{home}{separator}{field_name}"),
         message: format!(
             "`{field_name}` is known outside `{type_name}`: {} in {}",
             counted(sites.len(), "place"),
@@ -199,7 +202,7 @@ fn diagnostic(
         location: sites.keys().next().cloned(),
         notes,
         picture: Picture::Spread {
-            owner: format!("{}::{type_name}", tree.display(owner.home)),
+            owner: format!("{home}{separator}{type_name}"),
             field: bare_name(model, field),
             modules,
             others,

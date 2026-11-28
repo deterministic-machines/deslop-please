@@ -12,7 +12,7 @@ mod tangles;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::graph::{Graph, ThingId};
-use crate::model::{ItemId, Model, NodeId, NodeKind, Reference, Tree};
+use crate::model::{ItemId, Language, Model, NodeId, NodeKind, Reference, Tree};
 
 /// What a reader can hold in mind at once: seven (Miller, "The Magical Number
 /// Seven, Plus or Minus Two", 1956). The members of a tangle cannot be learned
@@ -335,11 +335,18 @@ fn in_scope(tree: &Tree, scope: Option<NodeId>, node: NodeId) -> bool {
     scope.is_none_or(|scope| tree.is_within(node, scope))
 }
 
-/// `my_crate::kinds::Ready`: where a thing is defined, and its name there.
+/// The separator a module's path uses: `/` for TypeScript, `::` for Rust.
+fn separator(tree: &Tree, module: NodeId) -> &'static str {
+    tree.node(module).language.map_or("::", Language::separator)
+}
+
+/// `my_crate::kinds::Ready`, `app/src/queue/Queue`: where a thing is
+/// defined, and its name there.
 fn full_name(model: &Model, graph: &Graph, thing: ThingId) -> String {
     let thing = &graph.things[thing.index()];
     let name = without_generics(&model.items[thing.item.index()].name);
-    format!("{}::{name}", model.tree.display(thing.home))
+    let separator = separator(&model.tree, thing.home);
+    format!("{}{separator}{name}", model.tree.display(thing.home))
 }
 
 /// `a, b, c, +2 more`: at most [`HELD_IN_MIND`] of `names`.
@@ -390,7 +397,11 @@ fn module_location(model: &Model, module: NodeId) -> Option<Location> {
         .filter(|file| !file.test && file.module == module)
         .min_by_key(|file| {
             let path = file.path.as_str();
-            let rank = if path.ends_with("/src/lib.rs") || path == "src/lib.rs" {
+            let name = path.rsplit('/').next().unwrap_or(path);
+            let entry = path == "src/lib.rs"
+                || path.ends_with("/src/lib.rs")
+                || matches!(name, "index.ts" | "index.tsx" | "index.js" | "index.jsx");
+            let rank = if entry {
                 0
             } else if path.ends_with("/mod.rs") || path.ends_with("src/main.rs") {
                 1
