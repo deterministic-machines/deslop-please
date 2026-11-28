@@ -657,22 +657,38 @@ fn a_target_or_features_bring_in_the_code_behind_their_cfg_and_each_keeps_its_in
     let console = "module-cycle gated::console::handle,gated::console::modes";
     let export = "module-cycle gated::export::csv,gated::export::rows";
     let metrics = "module-cycle gated::metrics::counter,gated::metrics::sink";
-    assert_eq!(keys(&workspace), [metrics]);
+    let host_has_console = cfg!(any(windows, target_arch = "aarch64"));
+    let mut host_default = vec![metrics];
+    if host_has_console {
+        host_default.push(console);
+    }
+    host_default.sort();
+    assert_eq!(keys(&workspace), host_default);
     // The Windows standard library need not be installed: rust-analyzer
     // reads its source.
     let windows = ["--target", "x86_64-pc-windows-msvc"];
     assert_eq!(configured_keys(&workspace, &windows), [console, metrics]);
+    let mut with_export = vec![export, metrics];
+    let mut all_features = vec![export, metrics];
+    let mut no_default_features = Vec::new();
+    if host_has_console {
+        with_export.push(console);
+        all_features.push(console);
+        no_default_features.push(console);
+    }
+    with_export.sort();
+    all_features.sort();
     assert_eq!(
         configured_keys(&workspace, &["--features", "export"]),
-        [export, metrics]
+        with_export
     );
     assert_eq!(
         configured_keys(&workspace, &["--all-features"]),
-        [export, metrics]
+        all_features
     );
     assert_eq!(
         configured_keys(&workspace, &["--no-default-features"]),
-        Vec::<String>::new()
+        no_default_features
     );
 
     let fresh = run(&workspace, &["-F", "export", "--no-default-features"]);
@@ -682,13 +698,17 @@ fn a_target_or_features_bring_in_the_code_behind_their_cfg_and_each_keeps_its_in
     )));
     assert!(fresh.stdout.contains("2 modules in `gated::export`"));
     assert!(!fresh.stdout.contains("gated::metrics"));
+    assert_eq!(fresh.stdout.contains("gated::console"), host_has_console);
     // Back to each: its index is still there, however its flags are written.
     for (flags, code) in [
         (&[][..], 1),
         (&windows, 1),
         (&["--features=export"], 1),
         (&["--all-features"], 1),
-        (&["--no-default-features"], 0),
+        (
+            &["--no-default-features"],
+            if host_has_console { 1 } else { 0 },
+        ),
     ] {
         let again = run(&workspace, flags);
         assert!(!again.stderr.contains("indexing"), "{flags:?}");
@@ -714,7 +734,10 @@ fn cargo_s_own_configuration_chooses_the_target_and_cfgs_too_and_each_keeps_its_
     let windows = ["--target", "x86_64-pc-windows-msvc"];
     let plain = run(&workspace, &[]);
     assert!(plain.stderr.contains("indexing workspace..."));
-    assert!(!plain.stdout.contains(console));
+    assert_eq!(
+        plain.stdout.contains(console),
+        cfg!(any(windows, target_arch = "aarch64"))
+    );
     assert!(run(&workspace, &windows).stdout.contains(console));
 
     // Each brings in `console`, indexing once: the next run finds its index.
@@ -729,10 +752,10 @@ fn cargo_s_own_configuration_chooses_the_target_and_cfgs_too_and_each_keeps_its_
             assert!(report.stdout.contains(console), "{variables:?}");
         }
     };
-    build_target("x86_64-pc-windows-msvc");
+    build_target("aarch64-apple-darwin");
     indexes_once(&[]);
     std::fs::remove_file(config.join("config.toml")).unwrap();
-    indexes_once(&[("RUSTFLAGS", "--cfg windows")]);
+    indexes_once(&[("RUSTFLAGS", "--cfg rustflags_console")]);
 
     // `--target` overrides `build.target`, as on cargo's command line.
     build_target("aarch64-apple-darwin");
