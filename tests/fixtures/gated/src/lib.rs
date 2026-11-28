@@ -1,7 +1,7 @@
 //! Code that only some configurations build. Each module holds two modules
 //! that use each other: a module cycle, reported when the module is indexed.
 
-#[cfg(windows)]
+#[cfg(any(windows, target_arch = "aarch64", rustflags_console))]
 pub mod console;
 #[cfg(feature = "export")]
 pub mod export;
