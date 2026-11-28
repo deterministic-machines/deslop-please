@@ -14,7 +14,7 @@ pub enum NodeKind {
     Module,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Node {
     pub name: String,
     pub kind: NodeKind,
@@ -24,7 +24,7 @@ pub struct Node {
     pub test: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Tree {
     nodes: Vec<Node>,
     children: HashMap<(NodeId, NodeKind, String), NodeId>,
@@ -123,6 +123,13 @@ impl Tree {
 
     pub fn is_test(&self, id: NodeId) -> bool {
         self.ancestors(id).any(|a| self.node(a).test)
+    }
+
+    /// The direct child of `parent` with this name, whatever its kind.
+    pub fn find_child_by_name(&self, parent: NodeId, name: &str) -> Option<NodeId> {
+        [NodeKind::Module, NodeKind::Package]
+            .into_iter()
+            .find_map(|kind| self.children.get(&(parent, kind, name.to_owned())).copied())
     }
 
     /// `my_crate::kinds::epoll` for a module, `.` for the workspace.
