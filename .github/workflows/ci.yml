@@ -34,8 +34,13 @@ jobs:
 
       - name: Install Rust
         run: |
-          rustup toolchain install 1.99.0 --profile minimal --component rust-src,rust-analyzer,clippy,rustfmt
+          rustup toolchain install 1.99.0 --profile minimal --component rust-src,rust-analyzer,clippy,rustfmt --target x86_64-unknown-linux-musl
           rustup default 1.99.0
+
+      - name: Install musl C toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
 
       - uses: Swatinem/rust-cache@v2
 
@@ -44,6 +49,11 @@ jobs:
 
       - name: Clippy
         run: cargo clippy --release --all-targets --locked -- -D warnings
+
+      - name: Build musl target
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+        run: cargo build --locked --target x86_64-unknown-linux-musl
 
       - name: Test
         run: cargo test --release --locked
