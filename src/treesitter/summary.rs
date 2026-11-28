@@ -205,6 +205,11 @@ pub struct AccessorFieldOp {
 #[derive(Debug, Clone)]
 pub struct AccessorCandidate {
     pub ops: Vec<AccessorFieldOp>,
+    /// True if the method takes `self` by value (giving or taking fields whole).
+    pub takes_self_by_value: bool,
+    /// True if the body overwrites through interior mutability, calls a
+    /// parameter, or returns a mutable borrow, guard, or raw pointer.
+    pub lends_to_write: bool,
 }
 
 #[derive(Debug, Clone, Default)]

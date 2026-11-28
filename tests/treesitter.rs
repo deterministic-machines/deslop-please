@@ -400,3 +400,128 @@ fn the_allow_file_suppresses_only_existing_entries_and_notes_what_is_fixed() {
     assert!(fixed.stdout.contains("2 allowed entries"));
     assert!(fixed.stdout.contains("now fixed"));
 }
+
+#[test]
+fn a_module_built_for_more_than_tests_or_an_example_is_not_test_code() {
+    let workspace = workspace(
+        "module_cycle",
+        Some("for_tests"),
+        "treesitter-module_cycle-for_tests-extra",
+    );
+    assert_eq!(keys(&workspace), Vec::<String>::new());
+    let kinds = workspace.join("src/kinds.rs");
+    let text = std::fs::read_to_string(&kinds).unwrap();
+    // `#[cfg(any(test, miri))]` does not imply `test`, so `harness` is production code.
+    std::fs::write(
+        &kinds,
+        text.replace("#[cfg(test)]", "#[cfg(any(test, miri))]"),
+    )
+    .unwrap();
+    assert_eq!(
+        keys(&workspace),
+        ["module-cycle net::kinds,net::socket"],
+        "#[cfg(any(test, miri))]"
+    );
+
+    // An example builds `kinds::harness` for itself, so the module is not test-only.
+    std::fs::write(&kinds, &text).unwrap();
+    let demo = workspace.join("examples/demo");
+    std::fs::create_dir_all(demo.join("kinds")).unwrap();
+    std::fs::write(
+        demo.join("main.rs"),
+        "mod kinds;\nfn main() {\n    kinds::harness::run();\n}\n",
+    )
+    .unwrap();
+    std::fs::write(demo.join("kinds.rs"), "pub mod harness;\n").unwrap();
+    std::fs::write(demo.join("kinds/harness.rs"), "pub fn run() {}\n").unwrap();
+    assert_eq!(keys(&workspace), ["module-cycle net::kinds,net::socket"]);
+}
+
+#[test]
+fn integration_test_submodules_named_after_a_library_module_do_not_make_it_shallow() {
+    let workspace = workspace("clean", None, "treesitter-test-target-same-name");
+    let lib = workspace.join("src/lib.rs");
+    std::fs::write(
+        &lib,
+        "pub mod queue;\npub fn run() -> u32 {\n    \
+         queue::f1() + queue::f2() + queue::f3() + queue::f4() \
+         + queue::f5() + queue::f6() + queue::f7() + queue::f8()\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        workspace.join("src/queue.rs"),
+        "pub fn f1() -> u32 { 1 }\npub fn f2() -> u32 { 2 }\n\
+         pub fn f3() -> u32 { 3 }\npub fn f4() -> u32 { 4 }\n\
+         pub fn f5() -> u32 { 5 }\npub fn f6() -> u32 { 6 }\n\
+         pub fn f7() -> u32 { 7 }\npub fn f8() -> u32 { 8 }\n",
+    )
+    .unwrap();
+    assert_eq!(keys(&workspace), Vec::<String>::new());
+
+    std::fs::create_dir_all(workspace.join("tests/queue")).unwrap();
+    std::fs::write(workspace.join("tests/main.rs"), "mod queue;\n").unwrap();
+    std::fs::write(
+        workspace.join("tests/queue/mod.rs"),
+        "mod part;\nmod helper {\n    pub fn expected() -> u32 { 36 }\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        workspace.join("tests/queue/part.rs"),
+        "#[test]\nfn runs() { assert_eq!(clean::run(), super::helper::expected()); }\n",
+    )
+    .unwrap();
+    assert_eq!(keys(&workspace), Vec::<String>::new());
+
+    let long = "#[test]\nfn runs() { assert_eq!(clean::run(), super::helper::expected()); }\n"
+        .to_owned()
+        + &"\n".repeat(2000);
+    std::fs::write(workspace.join("tests/queue/part.rs"), long).unwrap();
+    assert_eq!(keys(&workspace), ["long-file tests/queue/part.rs"]);
+}
+
+#[test]
+fn lending_getter_bound_to_a_local_and_field_forwarding_to_getter_still_leak() {
+    let workspace = workspace("field_leak", Some("getters"), "treesitter-let-bind-getter");
+    let policy = workspace.join("src/sched/policy.rs");
+    std::fs::write(
+        &policy,
+        "use crate::queue::RunQueue;\n\
+         pub fn peek(queue: &RunQueue) {\n\
+             let _items = queue.items();\n\
+         }\n",
+    )
+    .unwrap();
+    let report = workspace.join("src/sched/report.rs");
+    std::fs::write(
+        &report,
+        "use crate::queue::RunQueue;\npub fn ok(_: &RunQueue) {}\n",
+    )
+    .unwrap();
+    assert_eq!(
+        keys(&workspace),
+        ["field-leak runqueue::queue::ring::RunQueue::items"]
+    );
+
+    // A forwarder delegating `self.inner.items()` to an accessor still leaks `inner`'s field.
+    let ring = workspace.join("src/queue/ring.rs");
+    std::fs::write(
+        &ring,
+        "pub struct Inner { items: Vec<u32>, limit: usize }\n\
+         impl Inner {\n\
+             pub fn new(limit: usize) -> Inner { Inner { items: Vec::new(), limit } }\n\
+             pub fn full(&self) -> bool { self.items.len() >= self.limit }\n\
+             pub fn items(&self) -> &Vec<u32> { &self.items }\n\
+         }\n\
+         pub struct RunQueue { inner: Inner, tag: usize }\n\
+         impl RunQueue {\n\
+             pub fn new(limit: usize) -> RunQueue { RunQueue { inner: Inner::new(limit), tag: 0 } }\n\
+             pub fn full(&self) -> bool { self.tag == 0 && self.inner.full() }\n\
+             pub fn items(&self) -> &Vec<u32> { self.inner.items() }\n\
+         }\n",
+    )
+    .unwrap();
+    assert_eq!(
+        keys(&workspace),
+        ["field-leak runqueue::queue::ring::Inner::items"]
+    );
+}

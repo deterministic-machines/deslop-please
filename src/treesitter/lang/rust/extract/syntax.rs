@@ -34,6 +34,60 @@ impl Extractor<'_> {
         AccessMode::CopyOrRead
     }
 
+    /// What the code does with the result of a call expression, used for
+    /// lending getters: `*queue.limit()` and `queue.limit().0` read a copy,
+    /// while `let items = queue.items()` holds the borrow.
+    pub(super) fn call_access_mode(&self, node: Node<'_>, is_method: bool) -> AccessMode {
+        if !is_method {
+            return AccessMode::Work;
+        }
+        if self.is_assigned(node) {
+            return AccessMode::Work;
+        }
+        match self.borrow_kind(node) {
+            Some(true) => return AccessMode::Work,
+            Some(false) => return AccessMode::SharedBorrow,
+            None => {}
+        }
+        if self.is_indexed(node) {
+            return AccessMode::Work;
+        }
+        let mut tail = node;
+        let mut stepped = false;
+        loop {
+            if let Some((method, no_args)) = self.method_call_of(tail) {
+                return method_mode(&method, no_args);
+            }
+            match tail.parent() {
+                Some(parent)
+                    if parent.kind() == "field_expression"
+                        && parent.child_by_field_name("value") == Some(tail) =>
+                {
+                    tail = parent;
+                    stepped = true;
+                }
+                _ => break,
+            }
+        }
+        if stepped || self.is_dereferenced(node) {
+            return AccessMode::CopyOrRead;
+        }
+        AccessMode::SharedBorrow
+    }
+
+    fn is_dereferenced(&self, mut node: Node<'_>) -> bool {
+        while let Some(parent) = node.parent() {
+            match parent.kind() {
+                "parenthesized_expression" => node = parent,
+                "unary_expression" => {
+                    return self.text(parent).trim_start().starts_with('*');
+                }
+                _ => return false,
+            }
+        }
+        false
+    }
+
     pub(super) fn is_assigned(&self, node: Node<'_>) -> bool {
         let place = place_end(node);
         place.parent().is_some_and(|parent| {
@@ -402,6 +456,9 @@ const MUTATING: [&str; 24] = [
     "swap_remove",
 ];
 
+/// Calls that overwrite what they are called on through a shared reference.
+pub(super) const OVERWRITES: [&str; 5] = ["replace", "set", "store", "swap", "take"];
+
 /// Calls that only pass a value on, from deslop-please's PASSES.
 pub(super) const PASSES: [&str; 32] = [
     "Ok",
@@ -483,4 +540,56 @@ pub(super) fn unwrap_argument(mut node: Node<'_>) -> Node<'_> {
 pub(super) fn is_expression(node: Node<'_>) -> bool {
     node.kind().ends_with("_expression")
         || matches!(node.kind(), "identifier" | "scoped_identifier" | "block")
+}
+
+/// Whether a function's return type lends something its caller can write:
+/// `&mut`, `*mut`/`*const`, `impl`, `*Mut`, or a lock guard other than a read guard.
+pub(super) fn return_lends_to_write(node: Node<'_>, source: &str, offset: usize) -> bool {
+    node.child_by_field_name("return_type")
+        .is_some_and(|ret| return_type_matches(ret, source, offset, true))
+}
+
+/// Whether a function's return type points into `self`:
+/// `&`, `*`, `impl`, `Ref`, `RefMut`, or `*Guard`.
+pub(super) fn return_points(node: Node<'_>, source: &str, offset: usize) -> bool {
+    node.child_by_field_name("return_type")
+        .is_some_and(|ret| return_type_matches(ret, source, offset, false))
+}
+
+fn return_type_matches(root: Node<'_>, source: &str, offset: usize, write_only: bool) -> bool {
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        let hit = if write_only {
+            match node.kind() {
+                "mutable_specifier" | "pointer_type" | "abstract_type" => true,
+                "type_identifier" => {
+                    let range = node.byte_range();
+                    let name = source
+                        .get(offset + range.start..offset + range.end)
+                        .unwrap_or("");
+                    name.ends_with("Mut")
+                        || (name.ends_with("Guard") && !name.ends_with("ReadGuard"))
+                }
+                _ => false,
+            }
+        } else {
+            match node.kind() {
+                "reference_type" | "pointer_type" | "abstract_type" | "lifetime" => true,
+                "type_identifier" => {
+                    let range = node.byte_range();
+                    let name = source
+                        .get(offset + range.start..offset + range.end)
+                        .unwrap_or("");
+                    name == "Ref" || name == "RefMut" || name.ends_with("Guard")
+                }
+                _ => false,
+            }
+        };
+        if hit {
+            return true;
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.children(&mut cursor));
+    }
+    false
 }

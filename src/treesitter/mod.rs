@@ -63,7 +63,9 @@ fn workspace_root(start: &Path) -> PathBuf {
         if nearest.is_none() {
             nearest = Some(directory.to_path_buf());
         }
-        if std::fs::read_to_string(&manifest).is_ok_and(|text| text.contains("[workspace]")) {
+        if std::fs::read_to_string(&manifest).is_ok_and(|text| {
+            toml::from_str::<toml::Value>(&text).is_ok_and(|value| value.get("workspace").is_some())
+        }) {
             return directory.to_path_buf();
         }
     }

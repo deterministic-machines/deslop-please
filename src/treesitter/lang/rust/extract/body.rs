@@ -10,7 +10,9 @@ use crate::treesitter::summary::{
     FunctionBodySummary, LocalBinding, LocalDeclId, RawRef, RawRefKind, ReceiverExpr,
 };
 
-use super::syntax::{PASSES, is_expression, unwrap_argument};
+use super::syntax::{
+    OVERWRITES, PASSES, is_expression, return_lends_to_write, return_points, unwrap_argument,
+};
 use super::{Extractor, Nodes, RefSite, parse_rust};
 
 impl Extractor<'_> {
@@ -206,7 +208,6 @@ impl Extractor<'_> {
         let Some(function) = node.child_by_field_name("function") else {
             return;
         };
-        let mode = self.access_mode(node);
         match function.kind() {
             "field_expression" => {
                 let (Some(receiver), Some(field)) = (
@@ -216,13 +217,12 @@ impl Extractor<'_> {
                     return;
                 };
                 let member = self.text(field).to_owned();
-                self.member_ref(
-                    function,
-                    self.receiver_expr(receiver),
-                    member.clone(),
-                    true,
-                    mode,
-                );
+                let mode = self.call_access_mode(node, true);
+                let receiver_expr = self.receiver_expr(receiver);
+                self.member_ref(function, receiver_expr.clone(), member.clone(), true, mode);
+                if OVERWRITES.contains(&member.as_str()) {
+                    self.mark_write_lend(node, &receiver_expr);
+                }
                 if !self.passes(&member, node) {
                     self.mark_compute(node);
                 }
@@ -236,8 +236,13 @@ impl Extractor<'_> {
                     return;
                 }
                 let name = path.last().cloned().unwrap_or_default();
-                self.path_ref(function, path);
-                if !PASSES.contains(&name.as_str()) && !self.is_param(node, &name) {
+                let mode = self.call_access_mode(node, false);
+                self.path_ref_with_mode(function, path, mode);
+                if self.is_param(node, &name) {
+                    if let Some(holder) = self.scope.holder_at(node.start_byte() + self.offset) {
+                        self.lends_to_write.insert(holder);
+                    }
+                } else if !PASSES.contains(&name.as_str()) {
                     self.mark_compute(node);
                 }
             }
@@ -246,6 +251,10 @@ impl Extractor<'_> {
     }
 
     fn path_ref(&mut self, node: Node<'_>, path: Vec<String>) {
+        self.path_ref_with_mode(node, path, AccessMode::CopyOrRead);
+    }
+
+    fn path_ref_with_mode(&mut self, node: Node<'_>, path: Vec<String>, access: AccessMode) {
         if path.is_empty() {
             return;
         }
@@ -258,7 +267,7 @@ impl Extractor<'_> {
             scope: self.scope.module_at(at),
             holder: self.scope.holder_at(at),
             kind: RawRefKind::Path(path),
-            access: AccessMode::CopyOrRead,
+            access,
             is_test: self.scope.is_test_at(at),
         });
     }
@@ -311,6 +320,33 @@ impl Extractor<'_> {
             });
         op.is_write |= assigned;
         op.is_lent_or_written |= lent;
+    }
+
+    fn mark_write_lend(&mut self, node: Node<'_>, receiver: &ReceiverExpr) {
+        let Some(holder) = self.scope.holder_at(node.start_byte() + self.offset) else {
+            return;
+        };
+        self.lends_to_write.insert(holder);
+        if !self.takes_self.get(&holder).copied().unwrap_or(false) {
+            return;
+        }
+        if let ReceiverExpr::FieldChain { base, fields } = receiver
+            && **base == ReceiverExpr::SelfValue
+            && let Some(field) = fields.first()
+        {
+            let op = self
+                .ops
+                .entry(holder)
+                .or_default()
+                .entry(field.clone())
+                .or_insert(AccessorFieldOp {
+                    field_name: field.clone(),
+                    is_lent_or_written: false,
+                    is_write: false,
+                });
+            op.is_write = true;
+            op.is_lent_or_written = true;
+        }
     }
 
     // --------------------------------------------------------------- bodies
@@ -461,14 +497,27 @@ impl Extractor<'_> {
     pub(super) fn emit_bodies(&mut self, functions: &[(LocalDeclId, Node<'_>)]) {
         for &(id, node) in functions {
             let takes_self = self.takes_self.get(&id).copied().unwrap_or(false);
+            let takes_self_by_value = self.self_by_value.get(&id).copied().unwrap_or(false);
             let computes = self.computes.contains(&id);
-            let ops: Vec<AccessorFieldOp> = self
+            let ret_write_lend = return_lends_to_write(node, self.source, self.offset);
+            let ret_points = return_points(node, self.source, self.offset);
+            let lends_to_write = self.lends_to_write.contains(&id) || ret_write_lend;
+            let mut ops: Vec<AccessorFieldOp> = self
                 .ops
                 .get(&id)
                 .map(|ops| ops.values().cloned().collect())
                 .unwrap_or_default();
+            if ret_points || ret_write_lend {
+                for op in &mut ops {
+                    op.is_lent_or_written = true;
+                }
+            }
             let accessor =
-                (takes_self && !computes && !ops.is_empty()).then_some(AccessorCandidate { ops });
+                (takes_self && !computes && !ops.is_empty()).then_some(AccessorCandidate {
+                    ops,
+                    takes_self_by_value,
+                    lends_to_write,
+                });
             let forwarding = node
                 .child_by_field_name("body")
                 .and_then(|body| self.forwarding(body, id, takes_self));
@@ -563,7 +612,13 @@ impl Extractor<'_> {
                     match value.kind() {
                         "self" => {
                             fields.reverse();
-                            return Some((ReceiverExpr::SelfValue, fields));
+                            return Some((
+                                ReceiverExpr::FieldChain {
+                                    base: Box::new(ReceiverExpr::SelfValue),
+                                    fields: fields.clone(),
+                                },
+                                fields,
+                            ));
                         }
                         "field_expression" => current = value,
                         _ => return None,

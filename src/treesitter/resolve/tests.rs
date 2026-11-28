@@ -182,7 +182,11 @@ fn import(segments: &[&str], kind: ImportKind, reexport: bool) -> RawImport {
 fn accessor(ops: Vec<AccessorFieldOp>) -> FunctionBodySummary {
     FunctionBodySummary {
         computes: false,
-        accessor_candidate: Some(AccessorCandidate { ops }),
+        accessor_candidate: Some(AccessorCandidate {
+            ops,
+            takes_self_by_value: false,
+            lends_to_write: false,
+        }),
         ..Default::default()
     }
 }
@@ -838,6 +842,8 @@ fn accessors_classify_lent_copied_and_read_only_fields() {
         computes: true,
         accessor_candidate: Some(AccessorCandidate {
             ops: vec![field_op("items", true, false)],
+            takes_self_by_value: false,
+            lends_to_write: false,
         }),
         ..Default::default()
     });

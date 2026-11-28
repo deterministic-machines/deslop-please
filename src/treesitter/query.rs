@@ -76,25 +76,25 @@ impl ScopeIndex {
     }
 
     pub fn add_module(&mut self, range: Range<usize>, scope: ModuleScope) {
-        self.modules.push((range, scope));
+        insert_sorted_keyed(&mut self.modules, range, scope);
     }
 
     /// Register a declaration body span that holds code references (function, type, field, constant).
     pub fn add_holder(&mut self, range: Range<usize>, id: LocalDeclId) {
-        self.holders.push((range, id));
+        insert_sorted_keyed(&mut self.holders, range, id);
     }
 
     /// Register a container declaration span (`struct`, `enum`, `class`, `impl`) for child items.
     pub fn add_parent(&mut self, range: Range<usize>, id: LocalDeclId) {
-        self.parents.push((range, id));
+        insert_sorted_keyed(&mut self.parents, range, id);
     }
 
     pub fn add_test_span(&mut self, range: Range<usize>) {
-        self.test_spans.push(range);
+        insert_sorted(&mut self.test_spans, range);
     }
 
     pub fn add_skipped_span(&mut self, range: Range<usize>) {
-        self.skipped_spans.push(range);
+        insert_sorted(&mut self.skipped_spans, range);
     }
 
     /// Sort spans outermost-first (ascending start, descending end) for deterministic innermost queries.
@@ -128,6 +128,20 @@ impl ScopeIndex {
     pub fn is_skipped_at(&self, byte: usize) -> bool {
         contains_any(&self.skipped_spans, byte)
     }
+}
+
+fn insert_sorted_keyed<T>(spans: &mut Vec<(Range<usize>, T)>, range: Range<usize>, val: T) {
+    let pos = spans.partition_point(|(existing, _)| {
+        existing.start < range.start || (existing.start == range.start && existing.end > range.end)
+    });
+    spans.insert(pos, (range, val));
+}
+
+fn insert_sorted(spans: &mut Vec<Range<usize>>, range: Range<usize>) {
+    let pos = spans.partition_point(|existing| {
+        existing.start < range.start || (existing.start == range.start && existing.end > range.end)
+    });
+    spans.insert(pos, range);
 }
 
 fn sort_spans_keyed<T>(spans: &mut [(Range<usize>, T)]) {

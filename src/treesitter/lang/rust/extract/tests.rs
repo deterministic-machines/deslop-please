@@ -361,7 +361,10 @@ fn commented(&self, x: u32) -> u32 {
     assert_eq!(
         push.callee,
         CalleeExpr::Method {
-            receiver: ReceiverExpr::SelfValue,
+            receiver: ReceiverExpr::FieldChain {
+                base: Box::new(ReceiverExpr::SelfValue),
+                fields: vec!["inner".to_owned()],
+            },
             method: "push".to_owned()
         }
     );
@@ -529,7 +532,7 @@ fn uses(q: &Queue) {
 let _ = q.items().get(0);
 let _ = q.items().clone();
 let _ = q.items().len();
-let _ = q.head() + 1;
+let _ = *q.head() + 1;
 let _ = q.items();
 }
 "#,
@@ -540,10 +543,74 @@ let _ = q.items();
             AccessMode::MethodCall,
             AccessMode::CopyOrRead,
             AccessMode::MethodCall,
-            AccessMode::CopyOrRead,
+            AccessMode::SharedBorrow,
         ]
     );
     assert_eq!(modes(&summary, "head", true), [AccessMode::CopyOrRead]);
+}
+
+#[test]
+fn cfg_disabled_struct_before_disabled_module_skips_tuple_fields() {
+    let summary = extracted(
+        r#"
+#[cfg(feature = "off")]
+pub struct Disabled(pub u32);
+#[cfg(feature = "off")]
+mod disabled_mod {
+    pub fn hidden() {}
+}
+pub struct Kept(pub u32);
+"#,
+    );
+    assert!(named(&summary, "Disabled").is_empty());
+    assert!(named(&summary, "hidden").is_empty());
+    let fields: Vec<_> = summary
+        .decls
+        .iter()
+        .filter(|decl| decl.kind == ItemKind::Field)
+        .collect();
+    assert_eq!(fields.len(), 1);
+    assert_eq!(fields[0].parent_decl, Some(decl(&summary, "Kept").local_id));
+}
+
+#[test]
+fn accessors_flag_interior_mutability_callbacks_and_by_value_builders() {
+    let summary = extracted(
+        r#"
+struct State { items: Mutex<Vec<u32>>, head: Cell<usize>, count: usize }
+impl State {
+    fn lock_items(&self) -> MutexGuard<'_, Vec<u32>> { self.items.lock().unwrap() }
+    fn set_head(&self, head: usize) { self.head.set(head); }
+    fn with_items<R>(&self, f: impl Fn(&Mutex<Vec<u32>>) -> R) -> R { f(&self.items) }
+    fn with_count(mut self, count: usize) -> Self { self.count = count; self }
+}
+"#,
+    );
+    let locked = body(&summary, "lock_items")
+        .accessor_candidate
+        .as_ref()
+        .expect("lock_items is an accessor");
+    assert!(locked.lends_to_write);
+    assert!(locked.ops[0].is_lent_or_written);
+
+    let set_head = body(&summary, "set_head")
+        .accessor_candidate
+        .as_ref()
+        .expect("set_head is an accessor");
+    assert!(set_head.lends_to_write);
+    assert!(set_head.ops[0].is_write);
+
+    let with_items = body(&summary, "with_items")
+        .accessor_candidate
+        .as_ref()
+        .expect("with_items is an accessor");
+    assert!(with_items.lends_to_write);
+
+    let builder = body(&summary, "with_count")
+        .accessor_candidate
+        .as_ref()
+        .expect("with_count is an accessor");
+    assert!(builder.takes_self_by_value);
 }
 
 #[test]

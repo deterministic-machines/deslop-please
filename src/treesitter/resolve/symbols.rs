@@ -506,7 +506,7 @@ impl Resolver {
     }
 
     /// Look up a single name as code written in `module` sees it: its own
-    /// declarations, its imports, then each ancestor module.
+    /// declarations, imports, child modules, and globs, or a workspace package.
     pub(super) fn lookup_name(&self, module: NodeId, name: &str) -> Option<Target> {
         match name {
             "crate" => return Some(Target::Module(self.package_root(module))),
@@ -514,10 +514,8 @@ impl Resolver {
             "super" => return self.tree.parent(module).map(Target::Module),
             _ => {}
         }
-        for ancestor in self.tree.ancestors(module) {
-            if let Some(target) = self.lookup_direct(ancestor, name) {
-                return Some(target);
-            }
+        if let Some(target) = self.lookup_direct(module, name) {
+            return Some(target);
         }
         if let Some(&node) = self.package_names.get(name) {
             return Some(Target::Module(node));

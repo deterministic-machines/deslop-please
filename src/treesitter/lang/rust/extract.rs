@@ -80,9 +80,11 @@ pub(crate) fn extract(
         summary,
         scope: ScopeIndex::new(),
         takes_self: HashMap::new(),
+        self_by_value: HashMap::new(),
         params: HashMap::new(),
         ops: HashMap::new(),
         computes: HashSet::new(),
+        lends_to_write: HashSet::new(),
         locals: HashMap::new(),
         local_names: HashMap::new(),
         offset: 0,
@@ -210,10 +212,12 @@ struct Extractor<'a> {
     summary: FileSummary,
     scope: ScopeIndex,
     takes_self: HashMap<LocalDeclId, bool>,
+    self_by_value: HashMap<LocalDeclId, bool>,
     params: HashMap<LocalDeclId, HashSet<String>>,
     /// Field operations of each method's body, for accessor detection.
     ops: HashMap<LocalDeclId, BTreeMap<String, AccessorFieldOp>>,
     computes: HashSet<LocalDeclId>,
+    lends_to_write: HashSet<LocalDeclId>,
     locals: HashMap<LocalDeclId, Vec<LocalBinding>>,
     local_names: HashMap<LocalDeclId, HashSet<String>>,
     /// Byte offset and rows of the snippet being read: a macro's arguments.
@@ -260,9 +264,7 @@ impl Extractor<'_> {
     /// Whether a declaration is test code: cfg(test), #[test], or a test name.
     fn test_context(&self, node: Node<'_>, name: Option<&str>) -> bool {
         let attributes = cfg::attributes_of(node, self.source.as_bytes());
-        name.is_some_and(is_test_module)
-            || cfg::of_attrs(&attributes, &self.context).only_for_tests()
-            || cfg::marks_test(&attributes, &self.context)
+        name.is_some_and(is_test_module) || cfg::marks_test(&attributes, &self.context)
     }
 
     // --------------------------------------------------------------- scopes
@@ -314,6 +316,9 @@ impl Extractor<'_> {
         decls.sort_by_key(|(_, node)| node.start_byte());
         let mut functions = Vec::new();
         for (kind, node) in decls {
+            if self.scope.is_skipped_at(node.start_byte()) {
+                continue;
+            }
             if !self.built(node) {
                 self.scope.add_skipped_span(node.byte_range());
                 continue;
@@ -334,12 +339,12 @@ impl Extractor<'_> {
             let mut function = None;
             match kind {
                 DeclKind::Function => {
-                    let (params, takes_self, shared) = self.signature_parts(node);
+                    let (params, takes_self, shared, by_value) = self.signature_parts(node);
                     item.takes_self = takes_self;
                     item.self_is_shared_ref = shared;
                     item.signature = Some(self.signature(node, &params));
                     item.trait_impl = self.in_trait_impl(node);
-                    function = Some((params, takes_self));
+                    function = Some((params, takes_self, by_value));
                 }
                 DeclKind::Impl => {
                     let target = self.type_child(node, "type");
@@ -367,8 +372,9 @@ impl Extractor<'_> {
             if kind.parental() {
                 self.scope.add_parent(range, id);
             }
-            if let Some((params, takes_self)) = function {
+            if let Some((params, takes_self, by_value)) = function {
                 self.takes_self.insert(id, takes_self);
+                self.self_by_value.insert(id, by_value);
                 self.params
                     .insert(id, params.into_iter().map(|param| param.name).collect());
                 functions.push((id, node));
@@ -468,10 +474,11 @@ impl Extractor<'_> {
             .any(|child| child.kind() == "visibility_modifier")
     }
 
-    fn signature_parts(&self, node: Node<'_>) -> (Vec<ParamDecl>, bool, bool) {
+    fn signature_parts(&self, node: Node<'_>) -> (Vec<ParamDecl>, bool, bool, bool) {
         let mut params = Vec::new();
         let mut takes_self = false;
         let mut shared = false;
+        let mut by_value = false;
         if let Some(parameters) = node.child_by_field_name("parameters") {
             let mut cursor = parameters.walk();
             let children: Vec<Node<'_>> = parameters.named_children(&mut cursor).collect();
@@ -479,7 +486,9 @@ impl Extractor<'_> {
                 match child.kind() {
                     "self_parameter" => {
                         takes_self = true;
-                        shared = self.is_shared_self(child);
+                        let (is_shared, is_ref) = self.self_reference_kind(child);
+                        shared = is_shared;
+                        by_value = !is_ref;
                     }
                     "parameter" => params.push(ParamDecl {
                         name: child
@@ -494,7 +503,7 @@ impl Extractor<'_> {
                 }
             }
         }
-        (params, takes_self, shared)
+        (params, takes_self, shared, by_value)
     }
 
     fn signature(&self, node: Node<'_>, params: &[ParamDecl]) -> FunctionSig {
@@ -507,13 +516,14 @@ impl Extractor<'_> {
         }
     }
 
-    fn is_shared_self(&self, node: Node<'_>) -> bool {
+    fn self_reference_kind(&self, node: Node<'_>) -> (bool, bool) {
         let mut cursor = node.walk();
         let children: Vec<Node<'_>> = node.children(&mut cursor).collect();
-        children.iter().any(|child| child.kind() == "&")
-            && !children
-                .iter()
-                .any(|child| child.kind() == "mutable_specifier")
+        let is_ref = children.iter().any(|child| child.kind() == "&");
+        let is_mut = children
+            .iter()
+            .any(|child| child.kind() == "mutable_specifier");
+        (is_ref && !is_mut, is_ref)
     }
 
     fn pattern_name(&self, node: Node<'_>) -> String {

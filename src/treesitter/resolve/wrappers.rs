@@ -98,12 +98,19 @@ impl Resolver {
         if names.is_empty() {
             return Some(Vec::new());
         }
-        let parent = self.items[item.index()].parent?;
-        if self.items[parent.index()].kind != ItemKind::Type {
+        let mut current = self.items[item.index()].parent?;
+        if self.items[current.index()].kind != ItemKind::Type {
             return None;
         }
-        let fields = self.type_fields.get(&parent)?;
-        names.iter().map(|name| fields.get(name).copied()).collect()
+        let mut out = Vec::with_capacity(names.len());
+        for (index, name) in names.iter().enumerate() {
+            let field = *self.type_fields.get(&current)?.get(name)?;
+            out.push(field);
+            if index + 1 < names.len() {
+                current = *self.field_types.get(&field)?;
+            }
+        }
+        Some(out)
     }
 
     /// Whether following forwarders from `from` reaches `to`.
@@ -174,7 +181,11 @@ impl Resolver {
                             .field_type_exprs
                             .get(&field)
                             .is_some_and(|ty| !super::local_types::is_plain_data(ty));
-                    if op.is_lent_or_written || implicit_object_ref {
+                    if candidate.takes_self_by_value {
+                        if !lent.contains(&field) && !copied.contains(&field) {
+                            copied.push(field);
+                        }
+                    } else if op.is_lent_or_written || implicit_object_ref {
                         if !lent.contains(&field) {
                             lent.push(field);
                         }
@@ -190,6 +201,7 @@ impl Resolver {
                 }
                 let to_read = decl.self_is_shared_ref
                     && !any_write
+                    && !candidate.lends_to_write
                     && (!summary.language.objects_passed_by_ref() || lent.is_empty());
                 self.wrappers.insert(
                     item,

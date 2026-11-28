@@ -62,11 +62,6 @@ impl Cfg {
         self.normal || self.test
     }
 
-    /// Built only when testing.
-    pub(crate) fn only_for_tests(self) -> bool {
-        !self.normal && self.test
-    }
-
     pub(crate) fn from_bool(value: bool) -> Cfg {
         if value { Cfg::ALWAYS } else { Cfg::NEVER }
     }
@@ -233,9 +228,26 @@ pub(crate) fn of_attrs(attrs: &[Attr], ctx: &CfgContext) -> Cfg {
     cfg
 }
 
-/// `#[test]`, `#[cfg(test)]`, ... among `attrs`.
-pub(crate) fn marks_test(attrs: &[Attr], ctx: &CfgContext) -> bool {
-    attrs.iter().any(Attr::is_test) || of_attrs(attrs, ctx).only_for_tests()
+/// `#[test]`, `#[cfg(test)]`, `#[cfg(all(test, ..))]` among `attrs`.
+/// `#[cfg(any(test, miri))]` does not imply `test` and is not test-only.
+pub(crate) fn marks_test(attrs: &[Attr], _ctx: &CfgContext) -> bool {
+    attrs.iter().any(Attr::is_test) || implies_test_attrs(attrs)
+}
+
+/// Whether `attrs` carries a `#[cfg(..)]` that only holds when `test` does:
+/// `test`, an `all` containing one, or a non-empty `any` of only such predicates.
+pub(crate) fn implies_test_attrs(attrs: &[Attr]) -> bool {
+    attrs
+        .iter()
+        .any(|attr| attr.name == "cfg" && attr.args.as_deref().is_some_and(implies_test_predicate))
+}
+
+fn implies_test_predicate(args: &str) -> bool {
+    let mut parser = Predicates {
+        bytes: args.as_bytes(),
+        at: 0,
+    };
+    parser.implies_test().unwrap_or(false)
 }
 
 /// The active `#[path = ".."]` attribute of `attrs`, whether written directly
@@ -340,6 +352,47 @@ impl<'a> Predicates<'a> {
                 })
             }
             _ => Some(ctx.key(&name)),
+        }
+    }
+
+    fn implies_test(&mut self) -> Option<bool> {
+        self.space();
+        let name = self.ident()?;
+        self.space();
+        match self.bytes.get(self.at).copied() {
+            Some(b'=') => {
+                self.at += 1;
+                self.space();
+                let _ = self.string()?;
+                Some(false)
+            }
+            Some(b'(') => {
+                self.at += 1;
+                let mut parts = Vec::new();
+                loop {
+                    self.space();
+                    if self.bytes.get(self.at).copied() == Some(b')') {
+                        self.at += 1;
+                        break;
+                    }
+                    parts.push(self.implies_test()?);
+                    self.space();
+                    match self.bytes.get(self.at).copied() {
+                        Some(b',') => self.at += 1,
+                        Some(b')') => {
+                            self.at += 1;
+                            break;
+                        }
+                        _ => return None,
+                    }
+                }
+                Some(match name.as_str() {
+                    "all" => parts.into_iter().any(|p| p),
+                    "any" => !parts.is_empty() && parts.into_iter().all(|p| p),
+                    _ => false,
+                })
+            }
+            _ => Some(name == "test"),
         }
     }
 
@@ -736,13 +789,16 @@ mod tests {
 
     #[test]
     fn features_for_a_file_come_from_its_package_manifest() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory =
+            std::env::temp_dir().join(format!("deslop-rust-cfg-features-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
         std::fs::write(
-            directory.path().join("Cargo.toml"),
+            directory.join("Cargo.toml"),
             "[package]\nname = \"p\"\nversion = \"0.1.0\"\n\n[features]\ndefault = [\"on\"]\non = []\noff = []\n",
         )
         .unwrap();
-        let file = directory.path().join("src/lib.rs");
+        let file = directory.join("src/lib.rs");
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(&file, "").unwrap();
         let cargo = Configuration::default();
@@ -754,5 +810,6 @@ mod tests {
         );
         // The cache answers the same way on the second call.
         assert!(features_for_file(&file, &cargo).contains("on"));
+        std::fs::remove_dir_all(&directory).unwrap();
     }
 }

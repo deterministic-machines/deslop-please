@@ -9,7 +9,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use globset::Glob;
 use toml::Value;
 use tree_sitter::{Node, Parser};
 
@@ -185,16 +184,29 @@ fn package_spec(directory: &Path, manifest: &Value) -> Option<PackageSpec> {
             }
         }
     }
-    // Integration tests, named by the manifest or found in `tests/`.
-    if let Some(tests) = manifest.get("test").and_then(Value::as_array) {
-        for test in tests {
-            if let Some(path) = test.get("path").and_then(Value::as_str) {
-                add(directory.join(path), true);
+    // Examples, named by the manifest or found in `examples/`.
+    if let Some(examples) = manifest.get("example").and_then(Value::as_array) {
+        for example in examples {
+            if let Some(path) = example.get("path").and_then(Value::as_str) {
+                add(directory.join(path), false);
             }
         }
     }
-    for candidate in test_files(&directory.join("tests")) {
-        add(candidate, true);
+    for candidate in bin_files(&directory.join("examples")) {
+        add(candidate, false);
+    }
+    // Integration tests and benches, named by the manifest or found in `tests/` and `benches/`.
+    for (section, folder) in [("test", "tests"), ("bench", "benches")] {
+        if let Some(targets) = manifest.get(section).and_then(Value::as_array) {
+            for target in targets {
+                if let Some(path) = target.get("path").and_then(Value::as_str) {
+                    add(directory.join(path), true);
+                }
+            }
+        }
+        for candidate in bin_files(&directory.join(folder)) {
+            add(candidate, true);
+        }
     }
     Some(PackageSpec {
         name,
@@ -215,7 +227,7 @@ fn add_root(roots: &mut Vec<Root>, path: PathBuf, is_test: bool) {
     roots.push(Root { path, is_test });
 }
 
-/// `src/bin/*.rs` and `src/bin/*/main.rs`, sorted.
+/// `dir/*.rs` and `dir/*/main.rs`, sorted.
 fn bin_files(directory: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
     let Ok(entries) = std::fs::read_dir(directory) else {
@@ -236,22 +248,6 @@ fn bin_files(directory: &Path) -> Vec<PathBuf> {
             }
         }
     }
-    files
-}
-
-/// `tests/*.rs`, sorted.
-fn test_files(directory: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(directory) else {
-        return Vec::new();
-    };
-    let mut files: Vec<PathBuf> = entries
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.is_file() && path.extension().is_some_and(|extension| extension == "rs")
-        })
-        .collect();
-    files.sort();
     files
 }
 
@@ -398,9 +394,27 @@ fn wildcard_match(pattern: &str, text: &str) -> bool {
 }
 
 fn matches_any(relative: &str, patterns: &[String]) -> bool {
+    let parts: Vec<&str> = relative.split('/').filter(|p| !p.is_empty()).collect();
     patterns.iter().any(|pattern| {
-        Glob::new(pattern).is_ok_and(|glob| glob.compile_matcher().is_match(relative))
+        let pat: Vec<&str> = pattern.split('/').filter(|p| !p.is_empty()).collect();
+        path_glob_match(&pat, &parts)
+            || (!has_wildcard(pattern)
+                && relative
+                    .strip_prefix(pattern.as_str())
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('/')))
     })
+}
+
+fn path_glob_match(pattern: &[&str], path: &[&str]) -> bool {
+    match (pattern.first(), path.first()) {
+        (None, None) => true,
+        (Some(&"**"), _) => {
+            path_glob_match(&pattern[1..], path)
+                || (!path.is_empty() && path_glob_match(pattern, &path[1..]))
+        }
+        (Some(p), Some(s)) => wildcard_match(p, s) && path_glob_match(&pattern[1..], &path[1..]),
+        _ => false,
+    }
 }
 
 fn slash_path(path: &Path) -> String {
@@ -535,8 +549,8 @@ impl Walker<'_> {
             else {
                 continue;
             };
-            let test = test_context || cfg.only_for_tests();
-            let built_normal = cfg.normal && !test_context;
+            let only_for_tests = cfg::implies_test_attrs(&attributes);
+            let built_normal = cfg.built() && !only_for_tests && !test_context;
             let built_test = cfg.test;
             match child.child_by_field_name("body") {
                 Some(body) => {
@@ -547,7 +561,7 @@ impl Walker<'_> {
                         inner,
                         directory.join(name),
                         base.join(name),
-                        test,
+                        test_context,
                         source,
                     );
                 }
@@ -569,7 +583,7 @@ impl Walker<'_> {
                     self.record(inner, built_normal, built_test);
                     let scope = module_directory(&candidate, false);
                     let file_base = candidate.parent().unwrap_or(&base).to_path_buf();
-                    self.walk_file(candidate, inner, scope, file_base, test);
+                    self.walk_file(candidate, inner, scope, file_base, test_context);
                 }
             }
         }
@@ -591,6 +605,11 @@ impl Walker<'_> {
             }
             let test = is_test_module(&node.name) || (flags.test && !flags.normal);
             self.layout.tree.node_mut(id).test = test;
+        }
+        for file in &mut self.layout.files {
+            if file.package_id == self.package {
+                file.is_test |= self.layout.tree.is_test(file.module_id);
+            }
         }
     }
 
