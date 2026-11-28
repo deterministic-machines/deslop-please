@@ -9,6 +9,7 @@ mod indexing;
 mod lint;
 mod model;
 mod scip;
+mod treesitter;
 mod workspace;
 
 use std::fmt;
@@ -44,11 +45,30 @@ enum OutputFormat {
     Sarif,
 }
 
+/// Where the model comes from: rust-analyzer's SCIP index, or the in-process
+/// Tree-sitter backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Backend {
+    Scip,
+    TreeSitter,
+}
+
+impl Backend {
+    fn parse(value: &str) -> Option<Backend> {
+        match value {
+            "scip" => Some(Backend::Scip),
+            "tree-sitter" => Some(Backend::TreeSitter),
+            _ => None,
+        }
+    }
+}
+
 struct Options {
     scope: Option<String>,
     allow: Option<PathBuf>,
     update_allow: Option<PathBuf>,
     format: OutputFormat,
+    backend: Backend,
     configuration: Configuration,
 }
 
@@ -56,7 +76,8 @@ fn usage() -> String {
     format!(
         "\
 usage: {TOOL} [crate_or_mod] [--allow <path>] [--update-allow <path>]
-       [--target <triple>] [-F, --features <features>] [--all-features]
+       [--backend <scip|tree-sitter>] [--target <triple>]
+       [-F, --features <features>] [--all-features]
        [--no-default-features] [--json | --sarif]
 
 Runs architectural lints (module-cycle, tangle, field-leak, shallow-module,
@@ -66,6 +87,8 @@ options:
   <crate_or_mod>               check only one crate or module (e.g. my-crate)
   --allow <path>               suppress listed existing debt; new errors still fail
   --update-allow <path>        write current diagnostics to <path>
+  --backend <name>             read the workspace with `scip` (rust-analyzer,
+                               the default) or `tree-sitter` (no rust-analyzer)
   --json                       write diagnostics as JSON to stdout
   --sarif                      write diagnostics as SARIF 2.1.0 to stdout
   -V, --version                print the version and exit
@@ -90,9 +113,10 @@ A flag's value is the next word, or follows `=`: `--target=<triple>`.
 }
 
 /// The flags, and whether each takes a value. `-F` is `--features`.
-const FLAGS: [(&str, bool); 8] = [
+const FLAGS: [(&str, bool); 9] = [
     ("--allow", true),
     ("--update-allow", true),
+    ("--backend", true),
     ("--target", true),
     ("--features", true),
     ("--all-features", false),
@@ -111,6 +135,7 @@ fn parse_arguments(arguments: &[String]) -> Result<Options, String> {
         allow: None,
         update_allow: None,
         format: OutputFormat::Text,
+        backend: Backend::Scip,
         configuration: Configuration::default(),
     };
     let mut given = Vec::new();
@@ -151,6 +176,14 @@ fn parse_arguments(arguments: &[String]) -> Result<Options, String> {
                     return Err("'--update-allow' needs a path".to_owned());
                 }
                 options.update_allow = Some(PathBuf::from(value));
+            }
+            "--backend" => {
+                if value.is_empty() {
+                    return Err("'--backend' needs a value".to_owned());
+                }
+                options.backend = Backend::parse(value).ok_or_else(|| {
+                    format!("'{value}' is not a backend: use 'scip' or 'tree-sitter'")
+                })?;
             }
             "--target" => configuration.target(value)?,
             "--features" => configuration.features(value),
@@ -236,8 +269,7 @@ fn main() -> ExitCode {
 }
 
 fn run(options: Options) -> Result<bool, Error> {
-    let workspace = Workspace::discover()?;
-    let model = load_model(&workspace, &options.configuration)?;
+    let model = load_model(&options)?;
     let scope = match &options.scope {
         Some(query) => Some(
             lint::resolve_node(&model, query)
@@ -278,11 +310,21 @@ fn run(options: Options) -> Result<bool, Error> {
     Ok(reported.is_empty())
 }
 
-fn load_model(workspace: &Workspace, configuration: &Configuration) -> Result<Model, Error> {
-    let bytes = indexing::index(workspace, configuration)?;
-    let index =
-        scip::read(&bytes).map_err(|e| Error::new(format!("rust-analyzer's index: {e}")))?;
-    model::build(&index, workspace)
+fn load_model(options: &Options) -> Result<Model, Error> {
+    match options.backend {
+        Backend::Scip => {
+            let workspace = Workspace::discover()?;
+            let bytes = indexing::index(&workspace, &options.configuration)?;
+            let index = scip::read(&bytes)
+                .map_err(|e| Error::new(format!("rust-analyzer's index: {e}")))?;
+            model::build(&index, &workspace)
+        }
+        Backend::TreeSitter => {
+            let directory = std::env::current_dir()
+                .map_err(|e| Error::new(format!("cannot read current directory: {e}")))?;
+            treesitter::build(&directory, &options.configuration)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -359,6 +401,20 @@ mod tests {
     }
 
     #[test]
+    fn the_backend_defaults_to_scip_and_tree_sitter_can_be_chosen() {
+        assert_eq!(parsed(&["my-crate"]).unwrap().backend, Backend::Scip);
+        let spaced = parsed(&["--backend", "tree-sitter", "my-crate"]).unwrap();
+        assert_eq!(spaced.backend, Backend::TreeSitter);
+        assert_eq!(spaced.scope.as_deref(), Some("my-crate"));
+        let joined = parsed(&["--backend=tree-sitter"]).unwrap();
+        assert_eq!(joined.backend, Backend::TreeSitter);
+        assert_eq!(
+            parsed(&["--backend", "scip"]).unwrap().backend,
+            Backend::Scip
+        );
+    }
+
+    #[test]
     fn json_and_sarif_flags_are_parsed() {
         let options = parsed(&["--json", "my-crate"]).unwrap();
         assert_eq!(options.format, OutputFormat::Json);
@@ -412,6 +468,11 @@ mod tests {
             &["--release"],
             &["-p", "my-crate"],
             &["my-crate", "other-crate"],
+            &["--backend"],
+            &["--backend="],
+            &["--backend", "rust-analyzer"],
+            &["--backend", "scip", "--backend", "tree-sitter"],
+            &["--backend", "tree-sitter", "--backend=tree-sitter"],
         ] {
             assert!(parsed(words).is_err(), "{words:?}");
         }

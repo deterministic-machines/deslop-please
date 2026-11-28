@@ -14,7 +14,7 @@ cargo install deslop-please
 
 For Python, TypeScript and JavaScript, see the [port](https://github.com/Bor4brn/deslop-please).
 
-Requires `rust-analyzer` (e.g., `rustup component add rust-analyzer`).
+Requires `rust-analyzer` (e.g., `rustup component add rust-analyzer`). `--backend tree-sitter` reads the manifests and sources in process instead: no `rust-analyzer` or `cargo`, much faster, and it leaves out what only a compiler sees (build scripts, macro expansion).
 
 ```bash
 > deslop-please
