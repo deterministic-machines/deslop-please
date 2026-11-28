@@ -640,6 +640,7 @@ impl Extractor<'_> {
             path_segments,
             kind,
             is_reexport,
+            raw_specifier: None,
         });
     }
 }

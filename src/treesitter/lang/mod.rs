@@ -1,6 +1,7 @@
 //! Language frontend abstraction and workspace layout discovery types.
 
 pub mod rust;
+pub mod typescript;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -11,7 +12,7 @@ use crate::model::NodeId;
 use crate::model::Tree;
 use crate::treesitter::summary::{FileSummary, RawImport};
 
-pub use crate::treesitter::language::Language;
+pub use crate::model::Language;
 
 #[derive(Debug, Clone)]
 pub struct DiscoveredFile {
@@ -29,17 +30,23 @@ pub struct DiscoveredFile {
 
 #[derive(Debug, Clone)]
 pub struct WorkspaceLayout {
+    /// The workspace root every `rel_path` is relative to.
+    pub root: PathBuf,
     pub tree: Tree,
     pub files: Vec<DiscoveredFile>,
+    /// By workspace-relative path, the module a file belongs to.
+    pub file_to_module: HashMap<String, NodeId>,
     /// Map from package name (and crate-normalized snake_case name for Rust) to package `NodeId`.
     pub package_names: HashMap<String, NodeId>,
 }
 
 impl WorkspaceLayout {
-    pub fn new() -> Self {
+    pub fn new(root: PathBuf) -> Self {
         Self {
+            root,
             tree: Tree::new(),
             files: Vec::new(),
+            file_to_module: HashMap::new(),
             package_names: HashMap::new(),
         }
     }
@@ -54,14 +61,14 @@ pub enum ResolvedImport {
         /// If `Some`, imports this named symbol from `module` (e.g. `Foo`).
         /// If `None` and `ImportKind::Namespace`, binds `module` itself.
         item_name: Option<String>,
-        /// True when the import names a default-exported item; none in Rust.
+        /// True when the import names a default-exported item.
         is_default: bool,
-        /// True when wildcard glob import (`use a::*`).
+        /// True when wildcard glob import (`use a::*`, `export * from './a'`).
         is_glob: bool,
     },
 }
 
-/// Language frontend trait implemented by the Rust backend.
+/// Language frontend trait implemented by the Rust and TypeScript frontends.
 pub trait LanguageFrontend: Sync {
     fn language(&self) -> Language;
 

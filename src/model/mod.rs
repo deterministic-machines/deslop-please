@@ -11,6 +11,51 @@ pub use tree::{NodeId, NodeKind, Tree};
 
 use std::collections::HashMap;
 
+/// The source language a file is written in: the frontend that reads it and
+/// the model it fills.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Language {
+    Rust,
+    TypeScript,
+}
+
+impl Language {
+    /// The language `name` writes: its name, or the alias a flag or a file
+    /// extension uses.
+    pub fn parse(name: &str) -> Option<Language> {
+        match name.to_ascii_lowercase().as_str() {
+            "rust" | "rs" => Some(Language::Rust),
+            "typescript" | "ts" | "javascript" | "js" => Some(Language::TypeScript),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Language::Rust => "rust",
+            Language::TypeScript => "typescript",
+        }
+    }
+
+    /// What a module's path puts between its levels: `my_crate::kinds`,
+    /// `app/src/queue`.
+    pub fn separator(self) -> &'static str {
+        match self {
+            Language::Rust => "::",
+            Language::TypeScript => "/",
+        }
+    }
+
+    /// Whether values of the language are references to objects, so that
+    /// passing one on hands out the object itself. Rust's values are not.
+    pub fn objects_passed_by_ref(self) -> bool {
+        match self {
+            Language::Rust => false,
+            Language::TypeScript => true,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct Model {
     pub tree: Tree,

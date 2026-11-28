@@ -496,6 +496,7 @@ impl Walker<'_> {
         let Ok(source) = std::fs::read_to_string(&path) else {
             return;
         };
+        self.layout.file_to_module.insert(relative.clone(), module);
         self.layout.files.push(DiscoveredFile {
             abs_path: path.clone(),
             rel_path: relative.clone(),
@@ -645,7 +646,7 @@ fn write(root: &Path, path: &str, text: &str) {
 
 #[cfg(test)]
 fn discover_in(root: &Path) -> WorkspaceLayout {
-    let mut layout = WorkspaceLayout::new();
+    let mut layout = WorkspaceLayout::new(root.to_path_buf());
     discover(root, &Configuration::default(), &mut layout).expect("discovery");
     layout
 }
@@ -904,19 +905,19 @@ fn features_from_the_manifest_and_the_command_line_select_cfg_gated_modules() {
 
     let mut features = Configuration::default();
     features.features("export");
-    let mut layout = WorkspaceLayout::new();
+    let mut layout = WorkspaceLayout::new(root.to_path_buf());
     discover(&root, &features, &mut layout).unwrap();
     assert_eq!(modules(&layout), ["gated::export", "gated::metrics"]);
 
     let mut all = Configuration::default();
     all.all_features();
-    let mut layout = WorkspaceLayout::new();
+    let mut layout = WorkspaceLayout::new(root.to_path_buf());
     discover(&root, &all, &mut layout).unwrap();
     assert_eq!(modules(&layout), ["gated::export", "gated::metrics"]);
 
     let mut none = Configuration::default();
     none.no_default_features();
-    let mut layout = WorkspaceLayout::new();
+    let mut layout = WorkspaceLayout::new(root.to_path_buf());
     discover(&root, &none, &mut layout).unwrap();
     assert_eq!(modules(&layout), Vec::<String>::new());
     std::fs::remove_dir_all(root).unwrap();
@@ -962,7 +963,7 @@ fn an_empty_virtual_workspace_discovers_nothing() {
 fn a_manifest_with_no_package_and_no_workspace_is_an_error() {
     let root = test_workspace("no-package");
     write(&root, "Cargo.toml", "[profile.release]\nlto = true\n");
-    let mut layout = WorkspaceLayout::new();
+    let mut layout = WorkspaceLayout::new(root.to_path_buf());
     let error = discover(&root, &Configuration::default(), &mut layout).expect_err("no package");
     assert!(
         error

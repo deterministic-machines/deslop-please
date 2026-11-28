@@ -55,6 +55,16 @@ impl<'q, 't> MatchView<'q, 't> {
             .iter()
             .map(move |c| (names[c.index as usize], c.node))
     }
+
+    /// The node captured under exactly this name.
+    pub fn node(&self, name: &str) -> Option<Node<'t>> {
+        let index = self.query.capture_index_for_name(name)?;
+        self.m
+            .captures
+            .iter()
+            .find(|capture| capture.index == index)
+            .map(|capture| capture.node)
+    }
 }
 
 /// Span-based lexical scope index populated from `.scm` scope/declaration captures.
@@ -197,6 +207,11 @@ fn contains_any(spans: &[Range<usize>], byte: usize) -> bool {
 }
 
 /// 1-based start line of a Tree-sitter node.
+/// The text `source` writes at `node`.
+pub fn node_text<'a>(node: Node<'_>, source: &'a str) -> &'a str {
+    &source[node.byte_range()]
+}
+
 pub fn node_line(node: Node<'_>) -> u32 {
     (node.start_position().row as u32).saturating_add(1)
 }

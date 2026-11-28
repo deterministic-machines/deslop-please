@@ -2,8 +2,8 @@
 //! Contains zero Tree-sitter lifetimes or cross-file pointers so Stage 2 runs
 //! completely in parallel across files.
 
+use crate::model::Language;
 use crate::model::{ItemKind, NodeId};
-use crate::treesitter::language::Language;
 
 /// File-local identifier for a declaration inside a `FileSummary`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -50,19 +50,28 @@ pub struct RawImport {
     pub scope: ModuleScope,
     /// Language-specific module path segments (e.g. Rust `["crate", "kinds", "Kind"]`).
     pub path_segments: Vec<String>,
+    /// The module specifier as written, for a language that resolves
+    /// paths through a resolver rather than a module tree: `"./ring"`.
+    pub raw_specifier: Option<String>,
     pub kind: ImportKind,
-    /// True for `pub use ...`.
+    /// True for `pub use ...` or `export ... from '...'`.
     pub is_reexport: bool,
 }
 
 #[derive(Debug, Clone)]
 pub enum ImportKind {
-    /// Named symbol import: `use a::b::Foo as Bar`.
+    /// Named symbol import: `use a::b::Foo as Bar`,
+    /// `import { Foo as Bar } from './b'`.
     Named { name: String, alias: Option<String> },
-    /// Namespace/module import: `use a::b as ns` or `use a::b` (module).
+    /// Default import: `import Foo from './b'`.
+    Default { alias: String },
+    /// Namespace/module import: `use a::b as ns`, `use a::b` (module),
+    /// `import * as ns from './b'`.
     Namespace { alias: String },
-    /// Wildcard import: `use a::b::*`.
+    /// Wildcard import: `use a::b::*`, `export * from './a'`.
     Glob,
+    /// Side-effect only import: `import './setup'`.
+    SideEffect,
 }
 
 /// Simplified type expression extracted from signatures/annotations for local type propagation.

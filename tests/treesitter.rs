@@ -5,6 +5,11 @@
 //! and sources alone. None of these tests needs rust-analyzer, and one proves
 //! it by running the binary with an empty environment.
 //!
+//! `tests/fixtures/typescript` is the TypeScript counterpart of the Rust
+//! families: cycles, a tangle and field leaks across a `tsconfig` path alias
+//! and a barrel re-export. `tests/fixtures/mixed` holds a Cargo crate beside a
+//! TypeScript package, which `--lang` chooses between.
+//!
 //! `tests/fixtures/build_script` is left out on purpose: its cycle runs through
 //! constants its build script writes to `OUT_DIR`, which only the SCIP backend
 //! sees, because indexing compiles and runs the script. The Tree-sitter backend
@@ -399,4 +404,123 @@ fn the_allow_file_suppresses_only_existing_entries_and_notes_what_is_fixed() {
     assert_eq!(fixed.code, Some(0));
     assert!(fixed.stdout.contains("2 allowed entries"));
     assert!(fixed.stdout.contains("now fixed"));
+}
+
+/// A run with exactly `arguments`: no backend flag, so a test can pass its own.
+fn run_raw(workspace: &Path, arguments: &[&str]) -> Run {
+    let Output {
+        status,
+        stdout,
+        stderr,
+    } = Command::new(PROGRAM)
+        .args(arguments)
+        .current_dir(workspace)
+        .env("CARGO_TERM_COLOR", "never")
+        .output()
+        .unwrap();
+    Run {
+        code: status.code(),
+        stdout: String::from_utf8(stdout).unwrap(),
+        stderr: String::from_utf8(stderr).unwrap(),
+    }
+}
+
+#[test]
+fn a_typescript_workspace_reports_its_cycles_tangles_and_leaks() {
+    let workspace = workspace("typescript", None, "treesitter-typescript");
+    let result = run(&workspace, &[]);
+    assert_eq!(result.code, Some(1));
+    // The `clock` and `queue` cycle exists only through both a `tsconfig`
+    // path (`@/clock`) and a barrel: `queue/index.ts` re-exports `ring`,
+    // `ring` imports `@/clock`, and `clock` imports `./queue`.
+    assert!(
+        result
+            .stdout
+            .contains("error[module-cycle]: 2 modules in `web/src` use each other in a circle")
+    );
+    assert!(
+        result
+            .stdout
+            .contains("error[tangle]: 2 things know each other in a circle, across 2 modules")
+    );
+    // The two leaks are read through `@/queue/ring`, so they need the alias too.
+    assert!(
+        result.stdout.contains(
+            "error[field-leak]: `Ring::items` is known outside `Ring`: 1 place in 1 module"
+        )
+    );
+    assert!(result.stdout.contains(
+        "    web/src/queue/ring/Ring\n\
+         \x20     items ◀━━━ 1  web/src/sched/policy\n\
+         \x20     also known outside: head\n\
+         \x20     kept: limit\n"
+    ));
+    assert_eq!(
+        keys(&workspace),
+        [
+            "field-leak web/src/queue/ring/Ring::head",
+            "field-leak web/src/queue/ring/Ring::items",
+            "module-cycle web/src/clock,web/src/queue",
+            "module-cycle web/src/kernel/tasks,web/src/kernel/timers",
+            "tangle web/src/clock/tick,web/src/queue/ring/Ring",
+        ]
+    );
+}
+
+#[test]
+fn a_mixed_workspace_reports_both_languages_and_lang_chooses_one() {
+    let rust = "field-leak core::ring::Ring::items";
+    let typescript = "module-cycle web/src/a,web/src/b";
+    let workspace = workspace("mixed", None, "treesitter-mixed");
+    let result = run(&workspace, &[]);
+    assert_eq!(result.code, Some(1));
+    assert!(
+        result
+            .stdout
+            .contains("error[field-leak]: `Ring::items` is known outside `Ring`")
+    );
+    assert!(
+        result
+            .stdout
+            .contains("error[module-cycle]: 2 modules in `web/src` use each other in a circle")
+    );
+    assert_eq!(keys(&workspace), [rust, typescript]);
+    assert_eq!(configured_keys(&workspace, &["--lang", "rust"]), [rust]);
+    assert_eq!(configured_keys(&workspace, &["--lang", "ts"]), [typescript]);
+    assert_eq!(
+        configured_keys(&workspace, &["--lang", "javascript"]),
+        [typescript]
+    );
+    assert_eq!(
+        configured_keys(&workspace, &["--lang=rs,ts"]),
+        [rust, typescript]
+    );
+}
+
+#[test]
+fn a_language_or_backend_that_cannot_serve_the_workspace_is_an_error() {
+    let typescript = workspace("typescript", None, "treesitter-typescript-errors");
+    let missing = run(&typescript, &["--lang", "rust"]);
+    assert_eq!(missing.code, Some(2));
+    assert!(
+        missing.stderr.contains("no rust workspace found"),
+        "{}",
+        missing.stderr
+    );
+
+    let scip = run_raw(&typescript, &["--lang", "ts"]);
+    assert_eq!(scip.code, Some(2));
+    assert!(
+        scip.stderr.contains("needs '--backend tree-sitter'"),
+        "{}",
+        scip.stderr
+    );
+
+    let unknown = run_raw(&typescript, &["--lang", "cobol"]);
+    assert_eq!(unknown.code, Some(2));
+    assert!(
+        unknown.stderr.contains("'cobol' is not a language"),
+        "{}",
+        unknown.stderr
+    );
 }

@@ -25,7 +25,7 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Fixture {
-        let mut layout = WorkspaceLayout::new();
+        let mut layout = WorkspaceLayout::new(PathBuf::new());
         let package = layout
             .tree
             .child(layout.tree.root(), NodeKind::Package, "p");
@@ -176,6 +176,7 @@ fn import(segments: &[&str], kind: ImportKind, reexport: bool) -> RawImport {
             .collect(),
         kind,
         is_reexport: reexport,
+        raw_specifier: None,
     }
 }
 
@@ -1076,4 +1077,44 @@ fn accessor_lent_plain_fields_decide_shared_borrow_and_method_call_copies() {
         .map(|reference| reference.copies)
         .collect();
     assert_eq!(copies, [true, true, false, true, false, false, false, true]);
+}
+
+#[test]
+fn each_file_uses_the_frontend_of_its_language() {
+    let mut fixture = Fixture::new();
+    let lib = fixture.module("lib");
+    let web = fixture.module("web");
+    let core = fixture.module("core");
+    let rust_file = fixture.file("src/lib.rs", lib, Language::Rust);
+    let ts_file = fixture.file("src/web.ts", web, Language::TypeScript);
+    fixture.file("src/core.ts", core, Language::TypeScript);
+    let rust_frontend = MockFrontend::new(Language::Rust);
+    let ts_frontend = MockFrontend::new(Language::TypeScript);
+
+    let mut rust_summary = summary(&rust_file, 10);
+    rust_summary
+        .imports
+        .push(import(&["crate", "lib"], ImportKind::Glob, false));
+    let mut ts_summary = summary(&ts_file, 10);
+    ts_summary.imports.push(RawImport {
+        scope: ModuleScope::FileRoot,
+        path_segments: Vec::new(),
+        raw_specifier: Some("./core".to_owned()),
+        kind: ImportKind::Named {
+            name: "Thing".to_owned(),
+            alias: None,
+        },
+        is_reexport: false,
+    });
+
+    build_model(
+        fixture.layout,
+        vec![rust_summary, ts_summary],
+        &[
+            &rust_frontend as &dyn LanguageFrontend,
+            &ts_frontend as &dyn LanguageFrontend,
+        ],
+    );
+    assert_eq!(rust_frontend.calls(), 1);
+    assert_eq!(ts_frontend.calls(), 1);
 }

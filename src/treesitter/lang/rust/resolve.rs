@@ -45,6 +45,8 @@ pub(crate) fn resolve_import(
                 is_glob: false,
             })
         }
+        // Only a TypeScript frontend emits these; no Rust `use` declares one.
+        ImportKind::Default { .. } | ImportKind::SideEffect => None,
         ImportKind::Namespace { .. } => {
             if let Some(module) = resolve_path(layout, from_file, from_module, segments) {
                 return Some(ResolvedImport::Module {
@@ -129,7 +131,7 @@ mod tests {
     }
 
     fn fixture() -> Fixture {
-        let mut layout = WorkspaceLayout::new();
+        let mut layout = WorkspaceLayout::new(PathBuf::new());
         let app = layout
             .tree
             .child(layout.tree.root(), NodeKind::Package, "app");
@@ -168,6 +170,7 @@ mod tests {
                 .map(|segment| (*segment).to_owned())
                 .collect(),
             kind,
+            raw_specifier: None,
             is_reexport: false,
         }
     }

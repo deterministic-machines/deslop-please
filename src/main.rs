@@ -18,7 +18,7 @@ use std::process::ExitCode;
 
 use allow::AllowList;
 use configuration::Configuration;
-use model::Model;
+use model::{Language, Model};
 use workspace::Workspace;
 
 pub const TOOL: &str = env!("CARGO_BIN_NAME");
@@ -69,6 +69,8 @@ struct Options {
     update_allow: Option<PathBuf>,
     format: OutputFormat,
     backend: Backend,
+    /// The languages to read; every one the workspace has, if empty.
+    languages: Vec<Language>,
     configuration: Configuration,
 }
 
@@ -76,19 +78,22 @@ fn usage() -> String {
     format!(
         "\
 usage: {TOOL} [crate_or_mod] [--allow <path>] [--update-allow <path>]
-       [--backend <scip|tree-sitter>] [--target <triple>]
-       [-F, --features <features>] [--all-features]
+       [--backend <scip|tree-sitter>] [--lang <rust|typescript>]
+       [--target <triple>] [-F, --features <features>] [--all-features]
        [--no-default-features] [--json | --sarif]
 
 Runs architectural lints (module-cycle, tangle, field-leak, shallow-module,
-wide-directory, long-file) on the Cargo workspace.
+wide-directory, long-file) on the Rust and TypeScript/JavaScript workspace.
 
 options:
-  <crate_or_mod>               check only one crate or module (e.g. my-crate)
+  <crate_or_mod>               check only one crate, package, or module
   --allow <path>               suppress listed existing debt; new errors still fail
   --update-allow <path>        write current diagnostics to <path>
   --backend <name>             read the workspace with `scip` (rust-analyzer,
                                the default) or `tree-sitter` (no rust-analyzer)
+  --lang <lang>                read only this language: `rust` or `typescript`
+                               (`ts`, `js`, `javascript`); may be given more than
+                               once; the default reads every language found
   --json                       write diagnostics as JSON to stdout
   --sarif                      write diagnostics as SARIF 2.1.0 to stdout
   -V, --version                print the version and exit
@@ -113,10 +118,11 @@ A flag's value is the next word, or follows `=`: `--target=<triple>`.
 }
 
 /// The flags, and whether each takes a value. `-F` is `--features`.
-const FLAGS: [(&str, bool); 9] = [
+const FLAGS: [(&str, bool); 10] = [
     ("--allow", true),
     ("--update-allow", true),
     ("--backend", true),
+    ("--lang", true),
     ("--target", true),
     ("--features", true),
     ("--all-features", false),
@@ -127,8 +133,8 @@ const FLAGS: [(&str, bool); 9] = [
 
 /// Reads the command line as cargo reads its own: a flag's value is the next
 /// word, or follows `=` in the flag's own (`--target=<triple>`, `-F=a,b`) or
-/// `-F` (`-Fa,b`); only `--target` and `--features` may be given more than
-/// once.
+/// `-F` (`-Fa,b`); only `--target`, `--features` and `--lang` may be given
+/// more than once.
 fn parse_arguments(arguments: &[String]) -> Result<Options, String> {
     let mut options = Options {
         scope: None,
@@ -136,6 +142,7 @@ fn parse_arguments(arguments: &[String]) -> Result<Options, String> {
         update_allow: None,
         format: OutputFormat::Text,
         backend: Backend::Scip,
+        languages: Vec::new(),
         configuration: Configuration::default(),
     };
     let mut given = Vec::new();
@@ -151,7 +158,7 @@ fn parse_arguments(arguments: &[String]) -> Result<Options, String> {
         let Some(&(flag, takes_value)) = FLAGS.iter().find(|(name, _)| *name == flag) else {
             return Err(format!("unexpected argument '{word}'"));
         };
-        if given.contains(&flag) && !matches!(flag, "--target" | "--features") {
+        if given.contains(&flag) && !matches!(flag, "--target" | "--features" | "--lang") {
             return Err(format!("'{flag}' cannot be given more than once"));
         }
         given.push(flag);
@@ -185,6 +192,19 @@ fn parse_arguments(arguments: &[String]) -> Result<Options, String> {
                     format!("'{value}' is not a backend: use 'scip' or 'tree-sitter'")
                 })?;
             }
+            "--lang" => {
+                if value.is_empty() {
+                    return Err("'--lang' needs a language".to_owned());
+                }
+                for name in value.split(',').filter(|name| !name.is_empty()) {
+                    let language = Language::parse(name).ok_or_else(|| {
+                        format!("'{name}' is not a language: use 'rust' or 'typescript'")
+                    })?;
+                    if !options.languages.contains(&language) {
+                        options.languages.push(language);
+                    }
+                }
+            }
             "--target" => configuration.target(value)?,
             "--features" => configuration.features(value),
             "--all-features" => configuration.all_features(),
@@ -217,6 +237,17 @@ fn parse_arguments(arguments: &[String]) -> Result<Options, String> {
                 return Err("'--sarif' and '--update-allow' cannot be given together".to_owned());
             }
         }
+    }
+    if options.backend == Backend::Scip
+        && let Some(language) = options
+            .languages
+            .iter()
+            .find(|&&language| language != Language::Rust)
+    {
+        return Err(format!(
+            "'--lang {}' needs '--backend tree-sitter': the scip backend reads Rust only",
+            language.name()
+        ));
     }
     Ok(options)
 }
@@ -322,7 +353,7 @@ fn load_model(options: &Options) -> Result<Model, Error> {
         Backend::TreeSitter => {
             let directory = std::env::current_dir()
                 .map_err(|e| Error::new(format!("cannot read current directory: {e}")))?;
-            treesitter::build(&directory, &options.configuration)
+            treesitter::build(&directory, &options.configuration, &options.languages)
         }
     }
 }
@@ -415,6 +446,34 @@ mod tests {
     }
 
     #[test]
+    fn languages_are_named_by_flag_aliases() {
+        assert!(parsed(&["my-crate"]).unwrap().languages.is_empty());
+        assert_eq!(
+            parsed(&["--lang=javascript", "--backend", "tree-sitter"])
+                .unwrap()
+                .languages,
+            [Language::TypeScript]
+        );
+        let both = parsed(&["--lang", "rs,ts", "--backend", "tree-sitter"]).unwrap();
+        assert_eq!(both.languages, [Language::Rust, Language::TypeScript]);
+        assert_eq!(
+            parsed(&["--lang", "rust", "--lang", "rs"])
+                .unwrap()
+                .languages,
+            [Language::Rust]
+        );
+    }
+
+    #[test]
+    fn a_language_other_than_rust_needs_the_tree_sitter_backend() {
+        let error = parsed(&["--lang", "ts"]).err().unwrap();
+        assert!(error.contains("--backend tree-sitter"), "{error}");
+        let options = parsed(&["--lang", "ts", "--backend", "tree-sitter"]).unwrap();
+        assert_eq!(options.backend, Backend::TreeSitter);
+        assert!(parsed(&["--lang", "rust"]).is_ok());
+    }
+
+    #[test]
     fn json_and_sarif_flags_are_parsed() {
         let options = parsed(&["--json", "my-crate"]).unwrap();
         assert_eq!(options.format, OutputFormat::Json);
@@ -471,6 +530,10 @@ mod tests {
             &["--backend"],
             &["--backend="],
             &["--backend", "rust-analyzer"],
+            &["--lang"],
+            &["--lang="],
+            &["--lang", "cobol"],
+            &["--lang", "auto"],
             &["--backend", "scip", "--backend", "tree-sitter"],
             &["--backend", "tree-sitter", "--backend=tree-sitter"],
         ] {

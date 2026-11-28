@@ -209,6 +209,9 @@ use crate::w as namespace;
                 }
                 ImportKind::Namespace { alias } => format!("namespace {alias}"),
                 ImportKind::Glob => "glob".to_owned(),
+                ImportKind::Default { .. } | ImportKind::SideEffect => {
+                    unreachable!("no Rust import is a default or side-effect one")
+                }
             };
             (path, kind)
         })

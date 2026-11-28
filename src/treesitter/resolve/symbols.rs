@@ -174,11 +174,12 @@ impl Resolver {
                     Binding::Glob
                 } else if is_default {
                     let alias = match &import.kind {
+                        ImportKind::Default { alias } => alias.clone(),
                         ImportKind::Named { name, alias } => {
                             alias.clone().unwrap_or_else(|| name.clone())
                         }
                         ImportKind::Namespace { alias } => alias.clone(),
-                        ImportKind::Glob => continue,
+                        ImportKind::Glob | ImportKind::SideEffect => continue,
                     };
                     Binding::Default { alias }
                 } else {
@@ -195,6 +196,9 @@ impl Resolver {
                         (ImportKind::Named { name, alias }, None) => Binding::Namespace {
                             alias: alias.clone().unwrap_or_else(|| name.clone()),
                         },
+                        (ImportKind::Default { alias }, _) => Binding::Default {
+                            alias: alias.clone(),
+                        },
                         (ImportKind::Namespace { alias }, Some(resolved_name)) => Binding::Named {
                             name: resolved_name.clone(),
                             alias: (alias != resolved_name).then(|| alias.clone()),
@@ -203,6 +207,7 @@ impl Resolver {
                             alias: alias.clone(),
                         },
                         (ImportKind::Glob, _) => Binding::Glob,
+                        (ImportKind::SideEffect, _) => continue,
                     }
                 };
                 edges.push(ImportEdge {

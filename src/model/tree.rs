@@ -4,6 +4,8 @@
 
 use std::collections::HashMap;
 
+use crate::model::Language;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NodeId(u32);
 
@@ -22,6 +24,9 @@ pub struct Node {
     pub depth: u32,
     /// Test code, and so is everything inside it (`Tree::is_test`).
     pub test: bool,
+    /// The language it and its modules are written in. The workspace has
+    /// none of its own.
+    pub language: Option<Language>,
 }
 
 #[derive(Debug, Clone)]
@@ -45,6 +50,7 @@ impl Tree {
             parent: None,
             depth: 0,
             test: false,
+            language: None,
         };
         Tree {
             nodes: vec![root],
@@ -56,8 +62,22 @@ impl Tree {
         NodeId(0)
     }
 
-    /// The child of `parent` with this kind and name, made if it is new.
+    /// The child of `parent` with this kind and name, made if it is new, in
+    /// `parent`'s language.
     pub fn child(&mut self, parent: NodeId, kind: NodeKind, name: &str) -> NodeId {
+        let language = self.nodes[parent.index()].language;
+        self.child_with_lang(parent, kind, name, language)
+    }
+
+    /// The same, in a language of its own: a package a frontend reads, and
+    /// every module inside it.
+    pub fn child_with_lang(
+        &mut self,
+        parent: NodeId,
+        kind: NodeKind,
+        name: &str,
+        language: Option<Language>,
+    ) -> NodeId {
         let key = (parent, kind, name.to_owned());
         if let Some(&id) = self.children.get(&key) {
             return id;
@@ -70,6 +90,7 @@ impl Tree {
             parent: Some(parent),
             depth: parent_node.depth + 1,
             test: false,
+            language: language.or(parent_node.language),
         });
         self.children.insert(key, id);
         id
@@ -132,14 +153,16 @@ impl Tree {
             .find_map(|kind| self.children.get(&(parent, kind, name.to_owned())).copied())
     }
 
-    /// `my_crate::kinds::epoll` for a module, `.` for the workspace.
+    /// `my_crate::kinds::epoll` for a Rust module, `app/src/queue` for a
+    /// TypeScript one, `.` for the workspace.
     pub fn display(&self, id: NodeId) -> String {
         let node = self.node(id);
         match node.kind {
             NodeKind::Package => node.name.clone(),
             NodeKind::Module => {
                 let parent = self.parent(id).expect("a module has a parent");
-                format!("{}::{}", self.display(parent), node.name)
+                let separator = node.language.map_or("::", Language::separator);
+                format!("{}{separator}{}", self.display(parent), node.name)
             }
             NodeKind::Workspace => ".".to_owned(),
         }

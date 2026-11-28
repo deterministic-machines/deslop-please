@@ -88,7 +88,7 @@ mod tests {
     }
 
     fn discover_layout(root: &Path, cargo: &Configuration) -> WorkspaceLayout {
-        let mut layout = WorkspaceLayout::new();
+        let mut layout = WorkspaceLayout::new(root.to_path_buf());
         RustFrontend
             .discover(root, cargo, &mut layout)
             .expect("discovery");
@@ -226,7 +226,7 @@ mod fixture_tests {
     }
 
     fn discover(root: &Path, cargo: &Configuration) -> WorkspaceLayout {
-        let mut layout = WorkspaceLayout::new();
+        let mut layout = WorkspaceLayout::new(root.to_path_buf());
         RustFrontend
             .discover(root, cargo, &mut layout)
             .expect("discovery");

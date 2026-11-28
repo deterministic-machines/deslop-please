@@ -12,9 +12,13 @@ An opinionated linter to remove sloppy code. It follows [*A Philosophy of Softwa
 cargo install deslop-please
 ```
 
-For Python, TypeScript and JavaScript, see the [port](https://github.com/Bor4brn/deslop-please).
+Reads Rust, TypeScript and JavaScript. Rust goes through `rust-analyzer` (e.g., `rustup component add rust-analyzer`) unless `--backend tree-sitter` is given, which reads the manifests and sources in process instead: no `rust-analyzer` or `cargo`, much faster, and it leaves out what only a compiler sees (build scripts, macro expansion). TypeScript and JavaScript are read by `--backend tree-sitter`, which resolves `tsconfig` paths and barrel re-exports through [`oxc_resolver`](https://crates.io/crates/oxc_resolver). For Python, see the [port](https://github.com/Bor4brn/deslop-please).
 
-Requires `rust-analyzer` (e.g., `rustup component add rust-analyzer`). `--backend tree-sitter` reads the manifests and sources in process instead: no `rust-analyzer` or `cargo`, much faster, and it leaves out what only a compiler sees (build scripts, macro expansion).
+A workspace with both is checked in both languages. `--lang` narrows a run to one:
+
+```bash
+deslop-please --backend tree-sitter --lang ts
+```
 
 ```bash
 > deslop-please
