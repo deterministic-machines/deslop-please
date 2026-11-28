@@ -57,7 +57,7 @@ deslop-please --allow .deslop-please.allow
 
 They are really just one single idea: **deep** modules, **narrow** interfaces.
 
-Deep modules hide the attention for you and your agents, so you only need to care about the narrow interface.
+Deep modules hide the details from you and your agents, so you only need to care about the narrow interface.
 
 ### module-cycle
 
